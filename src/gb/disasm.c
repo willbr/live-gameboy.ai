@@ -82,7 +82,7 @@ int gb_disasm(GB *gb, uint8_t bank, uint16_t addr, char *out, int out_sz) {
         if (y == 4) { snprintf(out, (size_t)out_sz, "LDH ($FF%02X),A", d8); return 2; }
         if (y == 5) { snprintf(out, (size_t)out_sz, "ADD SP,%d", e); return 2; }
         if (y == 6) { snprintf(out, (size_t)out_sz, "LDH A,($FF%02X)", d8); return 2; }
-        snprintf(out, (size_t)out_sz, "LD HL,SP+%d", e); return 2;
+        snprintf(out, (size_t)out_sz, e >= 0 ? "LD HL,SP+%d" : "LD HL,SP%d", (int)e); return 2;
     case 1:
         if (q == 0) { snprintf(out, (size_t)out_sz, "POP %s", RP2[p]); return 1; }
         switch (p) {

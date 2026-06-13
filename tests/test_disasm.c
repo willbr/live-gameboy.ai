@@ -39,5 +39,7 @@ int main(void) {
     expect((uint8_t[]){0xCB,0x11}, 2, "RL C", 2);
     expect((uint8_t[]){0xCB,0x7E}, 2, "BIT 7,(HL)", 2);
     expect((uint8_t[]){0xC7}, 1, "RST $00", 1);
+    expect((uint8_t[]){0xF8,0x01}, 2, "LD HL,SP+1", 2);
+    expect((uint8_t[]){0xF8,0xFF}, 2, "LD HL,SP-1", 2);
     TEST_MAIN_END();
 }

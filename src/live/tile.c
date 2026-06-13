@@ -1,5 +1,5 @@
 /*
- * tile.c — 2bpp Game Boy tile codec + minimal PNG read/write.
+ * tile.c — 2bpp Game Boy tile codec + minimal PNG read/write + live painting.
  *
  * PNG support is self-contained (uses only zlib); does NOT depend on
  * src/shell/png.c so that liblive remains shell-independent.
@@ -10,6 +10,7 @@
  */
 
 #include "tile.h"
+#include "../gb/gb.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -288,4 +289,105 @@ int tile_sheet_from_png(const char *path, uint8_t *tiles, int max_tiles, int *ou
     free(raw);
     *out_ntiles = ntiles_total;
     return 0;
+}
+
+/* -----------------------------------------------------------------------
+ * tile_paint — paint a pixel into a live asset, ROM, and VRAM in-place.
+ * --------------------------------------------------------------------- */
+
+bool tile_paint(LiveSession *s, const char *asset_path,
+                int tile_index, int x, int y, uint8_t color,
+                char *err, int errlen)
+{
+    if (!s || !asset_path || x < 0 || x > 7 || y < 0 || y > 7
+           || color > 3) {
+        if (err && errlen > 0)
+            snprintf(err, (size_t)errlen, "tile_paint: invalid arguments");
+        return false;
+    }
+
+    AsmResult *r = live_result(s);
+    GB        *gb = live_gb(s);
+    if (!r || !gb) {
+        if (err && errlen > 0)
+            snprintf(err, (size_t)errlen, "tile_paint: null session internals");
+        return false;
+    }
+
+    /* --- Step 2: find the asset by substring match on path --- */
+    int ai = -1;
+    for (int i = 0; i < r->nassets; i++) {
+        if (strstr(r->assets[i].path, asset_path) != NULL ||
+            strstr(asset_path, r->assets[i].path) != NULL) {
+            ai = i;
+            break;
+        }
+    }
+    if (ai < 0) {
+        if (err && errlen > 0)
+            snprintf(err, (size_t)errlen,
+                     "tile_paint: asset '%s' not found in build database",
+                     asset_path);
+        return false;
+    }
+
+    /* --- Step 3: compute affected byte offsets within the asset --- */
+    uint32_t base   = (uint32_t)tile_index * 16;
+    uint32_t lo_off = base + (uint32_t)y * 2;
+    uint32_t hi_off = base + (uint32_t)y * 2 + 1;
+
+    if (hi_off >= (uint32_t)r->assets[ai].size) {
+        if (err && errlen > 0)
+            snprintf(err, (size_t)errlen,
+                     "tile_paint: tile_index %d y %d out of range for asset "
+                     "'%s' (size %zu)",
+                     tile_index, y, asset_path, r->assets[ai].size);
+        return false;
+    }
+
+    /* --- Step 4: update the asset bytes via tile2bpp_set --- */
+    /* Copy the 16-byte tile into a temp buffer, set the pixel, then write
+     * back only the two changed bytes. */
+    uint8_t tmp[16];
+    memcpy(tmp, r->assets[ai].bytes + base, 16);
+    tile2bpp_set(tmp, x, y, color);
+
+    uint8_t new_lo = tmp[y * 2];
+    uint8_t new_hi = tmp[y * 2 + 1];
+
+    r->assets[ai].bytes[lo_off] = new_lo;
+    r->assets[ai].bytes[hi_off] = new_hi;
+
+    /* --- Steps 5 & 6: propagate to ROM then to VRAM --- */
+    /* For each of the two changed asset bytes, scan prov_asset / prov_asset_off
+     * over the full ROM to find the matching ROM offsets, then update gb->rom
+     * and any VRAM bytes that originated from those ROM offsets. */
+
+    uint32_t changed_asset_offs[2];
+    uint8_t  changed_bytes[2];
+    changed_asset_offs[0] = lo_off;  changed_bytes[0] = new_lo;
+    changed_asset_offs[1] = hi_off;  changed_bytes[1] = new_hi;
+
+    for (int ci = 0; ci < 2; ci++) {
+        uint32_t asset_off  = changed_asset_offs[ci];
+        uint8_t  new_byte   = changed_bytes[ci];
+
+        /* Scan ROM provenance table for matching entries */
+        for (size_t o = 0; o < r->rom_size; o++) {
+            if (r->prov_asset[o] == ai &&
+                r->prov_asset_off[o] == asset_off) {
+                /* Step 5: patch the ROM byte */
+                gb->rom[o] = new_byte;
+
+                /* Step 6: patch any VRAM bytes that came from this ROM offset */
+                for (int v = 0; v < 0x2000; v++) {
+                    if (gb->vram_prov[v] == (uint32_t)o) {
+                        gb->vram[v] = new_byte;
+                    }
+                }
+            }
+        }
+    }
+
+    return true;
 }

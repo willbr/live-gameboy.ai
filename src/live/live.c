@@ -206,6 +206,11 @@ GB *live_gb(LiveSession *s)
     return s ? s->gb : NULL;
 }
 
+AsmResult *live_result(LiveSession *s)
+{
+    return s ? &s->result : NULL;
+}
+
 /* -----------------------------------------------------------------------
  * live_reload — atomic patch plan + refusal
  *

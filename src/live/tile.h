@@ -2,6 +2,8 @@
 #define LIVE_TILE_H
 
 #include <stdint.h>
+#include <stdbool.h>
+#include "live.h"
 
 /*
  * tile.h — 2bpp Game Boy tile codec + PNG import/export.
@@ -35,5 +37,30 @@ int tile_sheet_to_png(const char *path, const uint8_t *tiles, int ntiles, int ti
  * Returns 0 on success, non-zero on error.
  */
 int tile_sheet_from_png(const char *path, uint8_t *tiles, int max_tiles, int *out_ntiles);
+
+/*
+ * tile_paint — paint one pixel into a live tile asset, propagating the change
+ * through the build database (AsmResult), the emulator ROM (GB->rom), and live
+ * VRAM (GB->vram / GB->vram_prov) — all without calling live_reload().
+ *
+ * Parameters:
+ *   s           — live session (must be non-NULL)
+ *   asset_path  — path of the asset as recorded in the build database; matched
+ *                 by substring (strstr) so a basename or full path both work.
+ *   tile_index  — 0-based index of the 16-byte tile within the asset.
+ *   x, y        — pixel coordinates within the tile (0..7).
+ *   color       — new color value (0..3).
+ *   err         — buffer to receive a human-readable error message on failure.
+ *   errlen      — capacity of err.
+ *
+ * On success: assets[ai].bytes is updated, every matching ROM offset is
+ * patched in gb->rom, and every matching VRAM byte is patched in gb->vram.
+ * Returns true.
+ *
+ * On failure: err is set, no mutation has occurred, returns false.
+ */
+bool tile_paint(LiveSession *s, const char *asset_path,
+                int tile_index, int x, int y, uint8_t color,
+                char *err, int errlen);
 
 #endif /* LIVE_TILE_H */

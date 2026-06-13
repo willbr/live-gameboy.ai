@@ -355,11 +355,35 @@ void panel_palette(Canvas *c, struct GB *gb) {
     (void)gb;
 }
 
+/* decode one shade (0..3) of a tile pixel from VRAM 2bpp at tile index t. */
+static uint8_t tile_pixel(GB *gb, int t, int px, int py) {
+    int base = t * 16 + py * 2;
+    uint8_t lo = gb->vram[base], hi = gb->vram[base + 1];
+    int bit = 7 - px;
+    return (uint8_t)(((hi >> bit) & 1) << 1 | ((lo >> bit) & 1));
+}
+
 void panel_oam(Canvas *c, struct GB *gb) {
-    int px, py, pw, ph;
-    ide_panel_rect(PANEL_OAM, &px, &py, &pw, &ph);
-    draw_panel(c, px, py, pw, ph, "OAM");
-    (void)gb;
+    int x, y, w, h;
+    ide_panel_rect(PANEL_OAM, &x, &y, &w, &h);
+    ui_rect(c, x, y, w, h, 0x60A060FF);
+    ui_text(c, x + 4, y + 2, "OAM", 0xA0FFA0FF);
+
+    static const uint32_t GRAY[4] = {0xFFFFFFFF, 0xAAAAAAFF, 0x555555FF, 0x000000FF};
+    int top = y + 14, row_h = 9, rows = (h - 16) / row_h;
+    for (int i = 0; i < 40 && i < rows; i++) {
+        uint8_t oy = gb->oam[i * 4 + 0], ox = gb->oam[i * 4 + 1];
+        uint8_t tile = gb->oam[i * 4 + 2], attr = gb->oam[i * 4 + 3];
+        int ly = top + i * row_h;
+        /* 8x8 sprite preview at 1x */
+        for (int spy = 0; spy < 8; spy++)
+            for (int spx = 0; spx < 8; spx++)
+                ui_fill_rect(c, x + 4 + spx, ly + spy, 1, 1,
+                             GRAY[tile_pixel(gb, tile, spx, spy)]);
+        char row[40];
+        snprintf(row, sizeof row, "%02d Y%3d X%3d T%02X %02X", i, oy, ox, tile, attr);
+        ui_text(c, x + 16, ly, row, 0xC0E0C0FF);
+    }
 }
 
 void panel_tilemap(Canvas *c, struct GB *gb) {

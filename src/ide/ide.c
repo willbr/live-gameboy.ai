@@ -492,6 +492,7 @@ void ide_render(IdeState *s, Canvas *c) {
     panel_exec(c, s);
     panel_disasm(c, s);
     panel_vram_tiles(c, gb, s->selected_tile);
+    panel_oam(c, ide_gb(s));
     panel_code(c, s->source);
     panel_tile_editor(c, gb, s->selected_tile, s->paint_color);
     panel_mem_hex(c, gb, s->mem_base);

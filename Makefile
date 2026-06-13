@@ -56,6 +56,11 @@ acid2: $(BUILD)/dmg_acid2
 gbasm: src/asm/gbasm.c $(ASM_OBJ) $(GB_OBJ) | $(BUILD)
 	$(CC) $(CFLAGS) $< $(ASM_OBJ) $(GB_OBJ) -o $@
 
+# --- assembler demo: assemble the hello example ---
+asm-demo: gbasm
+	./gbasm examples/hello.asm -o $(BUILD)/hello.gb --sym $(BUILD)/hello.sym
+	@echo "asm-demo: OK ($(BUILD)/hello.gb)"
+
 # --- SDL shell (separate from the SDL-free core tests) ---
 SDL_CFLAGS = $(shell pkg-config --cflags sdl3)
 SDL_LIBS   = $(shell pkg-config --libs sdl3)
@@ -71,4 +76,4 @@ shell-shot: live-gameboy
 clean:
 	rm -rf $(BUILD) live-gameboy gbasm
 
-.PHONY: all test blargg roms clean acid2 shell-shot sound gbasm
+.PHONY: all test blargg roms clean acid2 shell-shot sound gbasm asm-demo

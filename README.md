@@ -9,7 +9,7 @@ Design: docs/superpowers/specs/2026-06-12-live-gameboy-design.md
 
 - [x] Milestone 1: headless libgb core — passes blargg cpu_instrs, instr_timing
 - [x] Milestone 2: SDL3 shell, pixel-FIFO PPU, APU
-- [ ] Milestone 3: built-in assembler
+- [x] Milestone 3: built-in SM83 assembler (`gbasm`) — RGBDS-inspired syntax, two-pass, build database
 - [ ] Milestone 4: live patching
 - [ ] Milestone 5: live tile editing
 - [ ] Milestone 6: debug panels, ROM export
@@ -28,6 +28,18 @@ Design: docs/superpowers/specs/2026-06-12-live-gameboy-design.md
     ./live-gameboy --shot game.gb out.png [frames] [scale]   # headless screenshot
 
 Keys: Z=A, X=B, Enter=Start, RShift=Select, Arrows=D-pad, Esc=quit.
+
+## Assemble
+
+The built-in `gbasm` assembler compiles RGBDS-inspired SM83 assembly to a valid
+Game Boy ROM with a complete cartridge header (logo, checksums):
+
+    make gbasm
+    ./gbasm game.asm -o game.gb [--sym game.sym]
+    ./live-gameboy game.gb
+
+See `examples/hello.asm` for a working serial-output demo.  The `--sym` flag
+writes a `BB:AAAA Name` symbol file for use with debuggers.
 
 ## Sound
 

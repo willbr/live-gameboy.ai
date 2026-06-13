@@ -678,6 +678,217 @@ static void test_include(void)
 }
 
 /* =========================================================================
+ * Helper: run GB for up to max_steps steps / max_frames frames.
+ * Returns 1 if frame count was reached, 0 on step cap.
+ * ======================================================================= */
+static int run_gb(GB *gb, int max_frames, int max_steps)
+{
+    int frames = 0, steps = 0;
+    while (frames < max_frames && steps < max_steps) {
+        int tc = gb_step(gb);
+        gb_tick(gb, tc);
+        gb_ppu_tick(gb, tc);
+        if (gb->frame_ready) {
+            gb->frame_ready = false;
+            frames++;
+        }
+        steps++;
+    }
+    return frames >= max_frames;
+}
+
+/* =========================================================================
+ * Task 6, Test 20: Serial output — assemble a program that writes "HI" to
+ * the serial port and verify g->serial_buf contains "HI".
+ *
+ * Entry-point handling:
+ *   gb_reset() sets PC=0x0100.  The Nintendo logo area (0x0104-0x0133) is
+ *   filled with logo bytes by the assembler, which are garbage as opcodes.
+ *   The safest approach: after asm_assemble, manually patch bytes 0x0100-
+ *   0x0102 to "JP $0150" (C3 50 01).  This is documented here.
+ *   The assembled code lives at 0x0150 (default org).
+ *
+ * Serial mechanism: write char to SB (FF01), then write $81 to SC (FF02);
+ *   the emulator appends SB to g->serial_buf.
+ *
+ * Program (assembled at 0x0150):
+ *   ; Send 'H' (0x48)
+ *   ld a, 'H'       ; 3E 48
+ *   ldh ($01), a    ; E0 01   -> SB = 'H'
+ *   ld a, $81       ; 3E 81
+ *   ldh ($02), a    ; E0 02   -> SC trigger, 'H' appended to serial_buf
+ *   ; Send 'I' (0x49)
+ *   ld a, 'I'       ; 3E 49
+ *   ldh ($01), a    ; E0 01
+ *   ld a, $81       ; 3E 81
+ *   ldh ($02), a    ; E0 02
+ *   ; Spin forever
+ *   Loop: jr Loop   ; 18 FE
+ * ======================================================================= */
+static void test_e2e_serial(void)
+{
+    const char *src =
+        "; Serial output: write 'HI' to the serial port\n"
+        "    ld a, $48\n"        /* 'H' */
+        "    ldh ($01), a\n"     /* SB = 'H' */
+        "    ld a, $81\n"        /* trigger byte */
+        "    ldh ($02), a\n"     /* SC = $81 -> serial transfer */
+        "    ld a, $49\n"        /* 'I' */
+        "    ldh ($01), a\n"     /* SB = 'I' */
+        "    ld a, $81\n"
+        "    ldh ($02), a\n"
+        "Loop:\n"
+        "    jr Loop\n";         /* infinite spin */
+
+    AsmResult r = asm_assemble(src, "serial_test.asm");
+
+    ASSERT_TRUE(r.ok);
+    if (!r.ok) {
+        for (int i = 0; i < r.ndiags; i++)
+            fprintf(stderr, "  diag: %s\n", r.diags[i].msg);
+        asm_free(&r);
+        return;
+    }
+    ASSERT_TRUE(r.rom_size >= 0x8000u);
+
+    /*
+     * Patch a JP $0150 at the entry point 0x0100 so the CPU reaches our code.
+     * gb_reset() starts PC=0x0100; without this patch it would execute
+     * header/logo bytes (garbage opcodes) instead of our assembled program.
+     */
+    r.rom[0x0100] = 0xC3;   /* JP */
+    r.rom[0x0101] = 0x50;   /* lo(0x0150) */
+    r.rom[0x0102] = 0x01;   /* hi(0x0150) */
+    /* Recompute header checksum after patching (0x0100-0x0102 are outside
+       the checksum range 0x0134-0x014C so no recomputation needed). */
+
+    GB *gb = gb_new();
+    ASSERT_TRUE(gb != NULL);
+    if (!gb) { asm_free(&r); return; }
+
+    bool loaded = gb_load_rom(gb, r.rom, r.rom_size);
+    ASSERT_TRUE(loaded);
+
+    gb_reset(gb);
+
+    /* Run until serial_buf contains "HI" or we hit the step cap */
+    int steps = 0;
+    const int MAX_STEPS = 500000;
+    while (steps < MAX_STEPS) {
+        int tc = gb_step(gb);
+        gb_tick(gb, tc);
+        gb_ppu_tick(gb, tc);
+        steps++;
+        if (gb->serial_len >= 2) break;
+    }
+
+    ASSERT_TRUE(gb->serial_len >= 2);
+    if (gb->serial_len >= 2) {
+        ASSERT_EQ((unsigned char)gb->serial_buf[0], 'H');
+        ASSERT_EQ((unsigned char)gb->serial_buf[1], 'I');
+    }
+
+    gb_free(gb);
+    asm_free(&r);
+}
+
+/* =========================================================================
+ * Task 6, Test 21: Draw a solid tile — assemble a program that:
+ *   1. Disables the LCD (so VRAM is accessible without mode-3 blocking)
+ *   2. Writes a solid tile (16 bytes of $FF) to VRAM at 0x8000
+ *   3. Sets tilemap entry 0 (0x9800) to tile index 0
+ *   4. Sets BGP = $E4 (color 3 -> shade 3)
+ *   5. Enables LCD with LCDC=$91 (LCD on, BG on, tile data 0x8000)
+ *   6. Loops forever
+ * Then runs 10 frames and asserts framebuffer pixel (0,0) is shade 3.
+ *
+ * Entry-point: same JP $0150 patch as the serial test.
+ *
+ * Tile data note: each 8-pixel row uses two bytes (lo, hi).  With both
+ * bytes = $FF, every pixel has color index 3 (both bits set), which the
+ * $E4 palette maps to shade 3 (darkest).
+ *
+ * LCDC=$91 = 0b10010001:
+ *   bit 7: LCD enable
+ *   bit 4: BG tile data area = 0x8000 (unsigned indexing)
+ *   bit 0: BG/window enable
+ * ======================================================================= */
+static void test_e2e_draw_tile(void)
+{
+    const char *src =
+        "; Draw-tile: solid dark tile at screen position 0,0\n"
+        "    ; Turn LCD off so we can write VRAM freely\n"
+        "    ld a, $00\n"
+        "    ldh ($40), a\n"         /* LCDC = 0 (LCD off) */
+        "    ; Write solid tile: 16 bytes of $FF to VRAM 0x8000\n"
+        "    ld a, $FF\n"
+        "    ld hl, $8000\n"
+        "    ld (hl+), a\n"          /* byte 0 */
+        "    ld (hl+), a\n"          /* byte 1 */
+        "    ld (hl+), a\n"          /* byte 2 */
+        "    ld (hl+), a\n"          /* byte 3 */
+        "    ld (hl+), a\n"          /* byte 4 */
+        "    ld (hl+), a\n"          /* byte 5 */
+        "    ld (hl+), a\n"          /* byte 6 */
+        "    ld (hl+), a\n"          /* byte 7 */
+        "    ld (hl+), a\n"          /* byte 8 */
+        "    ld (hl+), a\n"          /* byte 9 */
+        "    ld (hl+), a\n"          /* byte 10 */
+        "    ld (hl+), a\n"          /* byte 11 */
+        "    ld (hl+), a\n"          /* byte 12 */
+        "    ld (hl+), a\n"          /* byte 13 */
+        "    ld (hl+), a\n"          /* byte 14 */
+        "    ld (hl+), a\n"          /* byte 15 */
+        "    ; Set tilemap entry 0 at 0x9800 to tile index 0\n"
+        "    ld hl, $9800\n"
+        "    ld a, $00\n"
+        "    ld (hl), a\n"
+        "    ; Set palette: BGP = $E4 (color3->shade3)\n"
+        "    ld a, $E4\n"
+        "    ldh ($47), a\n"         /* BGP */
+        "    ; Enable LCD: LCDC = $91\n"
+        "    ld a, $91\n"
+        "    ldh ($40), a\n"         /* LCDC = $91 */
+        "Spin:\n"
+        "    jr Spin\n";             /* infinite loop */
+
+    AsmResult r = asm_assemble(src, "tile_test.asm");
+
+    ASSERT_TRUE(r.ok);
+    if (!r.ok) {
+        for (int i = 0; i < r.ndiags; i++)
+            fprintf(stderr, "  diag: %s\n", r.diags[i].msg);
+        asm_free(&r);
+        return;
+    }
+    ASSERT_TRUE(r.rom_size >= 0x8000u);
+
+    /* Patch JP $0150 at entry point 0x0100 */
+    r.rom[0x0100] = 0xC3;
+    r.rom[0x0101] = 0x50;
+    r.rom[0x0102] = 0x01;
+
+    GB *gb = gb_new();
+    ASSERT_TRUE(gb != NULL);
+    if (!gb) { asm_free(&r); return; }
+
+    bool loaded = gb_load_rom(gb, r.rom, r.rom_size);
+    ASSERT_TRUE(loaded);
+
+    gb_reset(gb);
+
+    /* Run 10 frames; the tile program should be drawing by then */
+    run_gb(gb, 10, 2000000);
+
+    /* Verify pixel (0,0) is shade 3 (darkest) */
+    const uint8_t *fb = gb_framebuffer(gb);
+    ASSERT_EQ(fb[0], 3);   /* pixel (0,0) == shade 3 */
+
+    gb_free(gb);
+    asm_free(&r);
+}
+
+/* =========================================================================
  * Main
  * ======================================================================= */
 int main(void)
@@ -703,6 +914,10 @@ int main(void)
     test_cartridge_header();
     test_incbin();
     test_include();
+
+    /* Task 6 tests: assemble -> run on real emulator -> assert */
+    test_e2e_serial();
+    test_e2e_draw_tile();
 
     TEST_MAIN_END();
 }

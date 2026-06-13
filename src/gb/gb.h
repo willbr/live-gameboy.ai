@@ -43,6 +43,7 @@ typedef struct GB {
     uint8_t  bg_fifo_c[8];    /* bg fifo colors */
     int      bg_fifo_n;       /* bg fifo count */
     bool     window_active;   /* window currently driving the fetcher this line */
+    bool     win_started;     /* window was shown on this line (for win_line increment) */
     uint8_t  oam_dma_src;     /* high byte of last DMA source */
 
     /* timer */

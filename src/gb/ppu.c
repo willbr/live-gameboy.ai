@@ -59,7 +59,10 @@ static void tick_one(GB *g) {
             render_begin_line(g);
         } else if (g->ppu_mode == MODE_DRAW) {
             render_step(g);
-            if (g->fx >= 160) set_mode(g, MODE_HBLANK);
+            if (g->fx >= 160) {
+                if (g->win_started) g->win_line++;
+                set_mode(g, MODE_HBLANK);
+            }
         }
     }
 
@@ -169,15 +172,24 @@ static void render_begin_line(GB *g) {
     g->fetch_step = 0;
     g->fetch_x = 0;
     g->window_active = false;
+    g->win_started = false;
     g->discard = g->scx & 7;          /* fine-scroll discard counter */
 }
 
-/* push 8 BG pixels for the next tile column into the fifo */
+/* push 8 BG/window pixels for the next tile column into the fifo */
 static void bg_fetch_tile(GB *g) {
-    int map_base = (g->lcdc & 0x08) ? 0x1C00 : 0x1800;    /* 9C00 / 9800 */
-    int ty = ((g->scy + g->ly) / 8);
-    int py = (g->scy + g->ly) % 8;
-    int tx = (g->scx / 8) + g->fetch_x;
+    int map_base, tx, ty, py;
+    if (g->window_active) {
+        map_base = (g->lcdc & 0x40) ? 0x1C00 : 0x1800;   /* window map: LCDC.6 */
+        tx = g->fetch_x;
+        ty = g->win_line / 8;
+        py = g->win_line % 8;
+    } else {
+        map_base = (g->lcdc & 0x08) ? 0x1C00 : 0x1800;   /* BG map: LCDC.3 */
+        tx = (g->scx / 8) + g->fetch_x;
+        ty = ((g->scy + g->ly) / 8);
+        py = (g->scy + g->ly) % 8;
+    }
     uint8_t lo, hi;
     fetch_bg_row(g, map_base, tx, ty, py, &lo, &hi);
     for (int b = 7; b >= 0; b--) {
@@ -189,6 +201,16 @@ static void bg_fetch_tile(GB *g) {
 
 static void render_step(GB *g) {
     if (g->fx >= 160) return;
+
+    /* window activation: when enabled, WY reached, and fx >= WX-7 */
+    if (!g->window_active && (g->lcdc & 0x20) && (g->lcdc & 0x01)
+        && g->ly >= g->wy && g->fx >= (g->wx - 7) && g->wx <= 166) {
+        g->window_active = true;
+        g->win_started = true;
+        g->bg_fifo_n = 0;          /* flush BG fifo; window starts fresh */
+        g->fetch_x = 0;
+        g->discard = 0;            /* window has no fine X scroll */
+    }
 
     /* ensure the fifo has pixels; the BG fetcher pushes 8 at a time */
     if (g->bg_fifo_n == 0) bg_fetch_tile(g);

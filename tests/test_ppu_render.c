@@ -97,5 +97,46 @@ int main(void) {
         ASSERT_EQ(px(g, 0, 0), 3);
         gb_free(g);
     }
+    {   /* window covering whole screen (WX=7,WY=0) shows window tilemap */
+        GB *g = fresh();
+        g->lcdc = 0xB1;             /* LCD on, BG on, window enable(bit5), tiledata 8000, winmap 9800(bit6=0) */
+        g->bgp = 0xE4; g->wy = 0; g->wx = 7;
+        uint8_t solid3[16]; for(int i=0;i<16;i++) solid3[i]=0xFF;   /* tile 1 = solid c3 */
+        set_tile(g, 1, solid3);
+        memset(g->vram + 0x1800, 0, 0x400);   /* bg map -> tile 0 (blank) */
+        memset(g->vram + 0x1800, 1, 0x400);   /* but window uses 9800 too here; set all to tile 1 */
+        render_frame(g);
+        ASSERT_EQ(px(g, 0, 0), 3);
+        ASSERT_EQ(px(g, 159, 143), 3);
+        gb_free(g);
+    }
+    {   /* window offset: WX=87 (screen x=80), WY=72. left/top half = BG(blank,0), bottom-right = window */
+        GB *g = fresh();
+        g->lcdc = 0xB1; g->bgp = 0xE4; g->wx = 87; g->wy = 72;
+        uint8_t solid3[16]; for(int i=0;i<16;i++) solid3[i]=0xFF;
+        set_tile(g, 1, solid3);
+        memset(g->vram + 0x1800, 1, 0x400);   /* both BG and window map entries -> tile 1; BG tile 0 stays blank */
+        /* make BG map all tile 0 (blank) and rely on window for tile 1: */
+        memset(g->vram + 0x1800, 0, 0x400);   /* 9800 used as BG map -> tile 0 blank */
+        memset(g->vram + 0x1C00, 1, 0x400);   /* 9C00 used as window map -> tile 1 */
+        g->lcdc = 0xF1;                        /* also set bit6=1 so window map=9C00, bit3=0 bg map=9800 */
+        render_frame(g);
+        ASSERT_EQ(px(g, 0, 0), 0);             /* BG region blank */
+        ASSERT_EQ(px(g, 159, 143), 3);         /* window region solid */
+        ASSERT_EQ(px(g, 79, 71), 0);           /* just outside window */
+        ASSERT_EQ(px(g, 80, 72), 3);           /* first window pixel */
+        gb_free(g);
+    }
+    {   /* window disabled (LCDC.5=0): window map ignored */
+        GB *g = fresh();
+        g->lcdc = 0x91; g->bgp = 0xE4; g->wx = 7; g->wy = 0;
+        uint8_t solid3[16]; for(int i=0;i<16;i++) solid3[i]=0xFF;
+        set_tile(g, 1, solid3);
+        memset(g->vram + 0x1C00, 1, 0x400);
+        memset(g->vram + 0x1800, 0, 0x400);
+        render_frame(g);
+        ASSERT_EQ(px(g, 0, 0), 0);
+        gb_free(g);
+    }
     TEST_MAIN_END();
 }

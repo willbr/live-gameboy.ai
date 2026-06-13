@@ -266,6 +266,38 @@ int asm_encode(const char          *mnemonic,
                AsmDiag             *err);
 
 /* -----------------------------------------------------------------------
+ * Layout types — function-aware placement memory (Task 1)
+ * --------------------------------------------------------------------- */
+
+/*
+ * AsmPlacement records where a single function (global-label-delimited
+ * region) was placed in the ROM.
+ *
+ *   name      — the global label name (NUL-terminated)
+ *   bank      — ROM bank (0 for ROM0, >=1 for ROMX)
+ *   addr      — CPU address of the function's first byte
+ *   slot_size — total bytes reserved for this function (including padding):
+ *               round_up(function_bytes, 16) + 16
+ */
+typedef struct {
+    char     name[64];
+    int      bank;
+    uint16_t addr;
+    int      slot_size;
+} AsmPlacement;
+
+/*
+ * AsmPlacementMem is a growable array of AsmPlacement records retained
+ * across builds.  Pass it to asm_assemble_mem() to get stable layout
+ * across reloads.  NULL or empty = fresh (first-time) layout.
+ */
+typedef struct {
+    AsmPlacement *items;
+    int           count;
+    int           cap;
+} AsmPlacementMem;
+
+/* -----------------------------------------------------------------------
  * Build database (output of two-pass assembly)
  * --------------------------------------------------------------------- */
 
@@ -285,6 +317,8 @@ int asm_encode(const char          *mnemonic,
  *                 that produced byte at linear ROM offset `off`, or -1.
  *   diags       — diagnostics list (ndiags entries)
  *   ok          — false if any error occurred; ROM content is partial.
+ *   placements  — function placements used in this build (nplacements entries)
+ *   nplacements — number of placements
  */
 typedef struct {
     uint8_t  *rom;
@@ -302,14 +336,50 @@ typedef struct {
     int       ndiags;
 
     bool ok;
+
+    AsmPlacement *placements;  /* function placements (NULL if no layout was run) */
+    int           nplacements;
 } AsmResult;
+
+/*
+ * layout_plan() — assign slot addresses to all global-label-delimited
+ * functions in the symbol table.
+ *
+ * Called internally by asm_assemble_mem() between pass 1 and pass 2.
+ * Exported so tests can exercise it directly.
+ *
+ * `syms` / `nsyms` — the symbol table (updated in-place with new addresses).
+ * `sec_base`       — CPU address of the section start (DEFAULT_ORG = 0x0150
+ *                    for the default ROM0 section; 0x4000 for ROMX).
+ * `sec_bank`       — bank index of the section (0 for ROM0).
+ * `inout_mem`      — retained placement memory (NULL = fresh).
+ *
+ * Returns a heap-allocated array of AsmPlacement (*out_count entries), or
+ * NULL on allocation failure or if there are no functions.
+ * The caller (asm_assemble_mem) owns the returned array.
+ */
+AsmPlacement *layout_plan(AsmSymbol *syms, int nsyms,
+                           uint16_t sec_base, int sec_bank,
+                           AsmPlacementMem *inout_mem,
+                           int *out_count);
 
 /*
  * Assemble `src` (NUL-terminated RGBDS-inspired SM83 assembly source).
  * `filename` is used only in diagnostic messages (may be NULL).
+ * `inout_mem` is the retained placement memory from a prior build (may be
+ * NULL for a fresh/first build).  On return, *inout_mem is updated with
+ * this build's placements.  asm_assemble() is equivalent to calling this
+ * with inout_mem = NULL.
  *
  * Always returns a fully initialised AsmResult; check result.ok.
  * Call asm_free() to release all heap memory when done.
+ */
+AsmResult asm_assemble_mem(const char *src, const char *filename,
+                            AsmPlacementMem *inout_mem);
+
+/*
+ * Assemble `src` with no retained placement memory (fresh layout).
+ * Equivalent to asm_assemble_mem(src, filename, NULL).
  */
 AsmResult asm_assemble(const char *src, const char *filename);
 

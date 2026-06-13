@@ -791,10 +791,11 @@ static bool splice_include(
 }
 
 /* -------------------------------------------------------------------------
- * Public: asm_assemble
+ * Public: asm_assemble_mem
  * ----------------------------------------------------------------------- */
 
-AsmResult asm_assemble(const char *src, const char *filename)
+AsmResult asm_assemble_mem(const char *src, const char *filename,
+                            AsmPlacementMem *inout_mem)
 {
     AsmResult r;
     memset(&r, 0, sizeof(r));
@@ -1049,8 +1050,200 @@ AsmResult asm_assemble(const char *src, const char *filename)
     }
 
     /* ------------------------------------------------------------------
-     * Allocate ROM image
+     * Layout pass (between pass 1 and pass 2)
+     *
+     * layout_plan() assigns slot addresses to all global-label-delimited
+     * functions and updates their symbol table entries (addr, off, value).
+     * It also adjusts local labels that belong to each function.
+     *
+     * After layout, we must recompute stmt_off[] / stmt_addr[] to reflect
+     * the new function addresses.  We do a "pass 1.5" that replays the
+     * address-assignment logic but jumps to the assigned address whenever
+     * it encounters a global label.
      * ------------------------------------------------------------------ */
+    {
+        /* Determine the section base and bank for layout.
+         * Walk the statements to find the first SECTION directive; if none,
+         * use the default ROM0 @ DEFAULT_ORG. */
+        uint16_t layout_base = DEFAULT_ORG;
+        int      layout_bank = 0;
+        for (int i = 0; i < nstmts; i++) {
+            if (stmts[i].kind == ST_DIRECTIVE &&
+                stmts[i].dir.kind == DIR_SECTION) {
+                parse_section_args(toks, stmts[i].dir.args_start,
+                                   stmts[i].dir.args_count,
+                                   &layout_bank, &layout_base);
+                break;
+            }
+        }
+
+        int np = 0;
+        AsmPlacement *placements = layout_plan(st.syms, st.count,
+                                                layout_base, layout_bank,
+                                                inout_mem, &np);
+        if (placements && np > 0) {
+            /* Store placements in result */
+            r.placements  = placements;
+            r.nplacements = np;
+
+            /* Pass 1.5: recompute stmt_off / stmt_addr using new symbol addresses.
+             *
+             * Rules:
+             *  - Reset section state from the initial SECTION directive (or default).
+             *  - When we see a global label, jump sec.cur_addr to sym->addr,
+             *    sec.cur_off to sym->off (already updated by layout_plan).
+             *  - All other statements advance by their size as before.
+             *  - The recorded stmt_off[i]/stmt_addr[i] are set to sec.cur_{off,addr}
+             *    at the START of each statement (same semantics as pass 1).
+             */
+            sec.bank     = 0;
+            sec.cur_addr = DEFAULT_ORG;
+            sec.cur_off  = DEFAULT_ORG;
+            global_ctx[0] = '\0';
+
+            for (int i = 0; i < nstmts; i++) {
+                const AsmStmt *s = &stmts[i];
+
+                switch (s->kind) {
+                case ST_DIRECTIVE:
+                    if (s->dir.kind == DIR_SECTION) {
+                        int nb = 0; uint16_t no = 0;
+                        parse_section_args(toks, s->dir.args_start,
+                                           s->dir.args_count, &nb, &no);
+                        sec.bank     = nb;
+                        sec.cur_addr = no;
+                        sec.cur_off  = linear_off(nb, no);
+                        global_ctx[0] = '\0';
+                    }
+                    break;
+                case ST_LABEL:
+                    if (!s->label.is_local) {
+                        /* Global label: jump to its (possibly new) address */
+                        const AsmSymbol *sym = asm_sym_lookup(&st, s->label.name);
+                        if (sym && sym->bank >= 0) {
+                            sec.bank     = sym->bank;
+                            sec.cur_addr = sym->addr;
+                            sec.cur_off  = sym->off;
+                        }
+                        snprintf(global_ctx, sizeof(global_ctx), "%s", s->label.name);
+                    } else {
+                        /* Local label: look up the expanded name */
+                        char full[256];
+                        expand_local(full, sizeof(full), s->label.name, global_ctx);
+                        const AsmSymbol *sym = asm_sym_lookup(&st, full);
+                        if (sym && sym->bank >= 0) {
+                            sec.bank     = sym->bank;
+                            sec.cur_addr = sym->addr;
+                            sec.cur_off  = sym->off;
+                        }
+                    }
+                    break;
+                default:
+                    break;
+                }
+
+                stmt_off[i]  = sec.cur_off;
+                stmt_addr[i] = sec.cur_addr;
+                stmt_bank[i] = sec.bank;
+
+                /* Advance for non-label statements */
+                switch (s->kind) {
+                case ST_INSTR: {
+                    int len = estimate_instr_len(s->instr.mnemonic, toks,
+                                                  s->instr.ops, s->instr.nops,
+                                                  sec.cur_addr, &st);
+                    if (len < 1) len = 1;
+                    section_advance(&sec, len);
+                    break;
+                }
+                case ST_DIRECTIVE:
+                    switch (s->dir.kind) {
+                    case DIR_DB: {
+                        int sz = db_size(toks, s->dir.args_start, s->dir.args_count);
+                        section_advance(&sec, sz);
+                        break;
+                    }
+                    case DIR_DW: {
+                        int nelems = 1;
+                        int end = s->dir.args_start + s->dir.args_count;
+                        for (int j = s->dir.args_start; j < end; j++) {
+                            if (toks[j].kind == TOK_PUNCT &&
+                                toks[j].text[0] == ',') nelems++;
+                        }
+                        section_advance(&sec, nelems * 2);
+                        break;
+                    }
+                    case DIR_DS: {
+                        int fill = 0;
+                        int cnt  = ds_count(toks,
+                                            s->dir.args_start, s->dir.args_count,
+                                            &st, sec.cur_addr, &fill);
+                        if (cnt > 0) section_advance(&sec, cnt);
+                        break;
+                    }
+                    case DIR_INCBIN: {
+                        if (s->dir.args_count < 1) break;
+                        const AsmToken *ft = &toks[s->dir.args_start];
+                        if (ft->kind != TOK_STRING) break;
+                        char fname[512];
+                        size_t flen2 = ft->len < sizeof(fname)-1 ? ft->len : sizeof(fname)-1;
+                        memcpy(fname, ft->text, flen2);
+                        fname[flen2] = '\0';
+                        FILE *fh2 = fopen(fname, "rb");
+                        if (!fh2 && filename) {
+                            const char *slash2 = strrchr(filename, '/');
+                            if (slash2) {
+                                size_t dlen = (size_t)(slash2 - filename + 1);
+                                if (dlen + flen2 < sizeof(fname)) {
+                                    memmove(fname + dlen, fname, flen2 + 1);
+                                    memcpy(fname, filename, dlen);
+                                    fh2 = fopen(fname, "rb");
+                                }
+                            }
+                        }
+                        if (fh2) {
+                            fseek(fh2, 0, SEEK_END);
+                            long fsz2 = ftell(fh2);
+                            fclose(fh2);
+                            if (fsz2 > 0) section_advance(&sec, (int)fsz2);
+                        }
+                        break;
+                    }
+                    default:
+                        break;
+                    }
+                    break;
+                default:
+                    break;
+                }
+            }
+
+            /* After pass 1.5, sec.cur_off is the end of the last function slot.
+             * We need this for ROM size calculation below. */
+        }
+        /* else: no functions or allocation failure — keep original stmt_off/addr */
+    }
+
+    /* ------------------------------------------------------------------
+     * Allocate ROM image
+     *
+     * After layout, sec.cur_off may have changed.  We need to figure out
+     * the maximum ROM offset across all placements.
+     * ------------------------------------------------------------------ */
+
+    /* Compute the maximum offset needed: scan all placements */
+    {
+        uint32_t max_off = sec.cur_off;  /* fallback: end of last statement */
+        if (r.placements) {
+            for (int pi = 0; pi < r.nplacements; pi++) {
+                AsmPlacement *pl = &r.placements[pi];
+                uint32_t pl_end = linear_off(pl->bank, pl->addr) + (uint32_t)pl->slot_size;
+                if (pl_end > max_off) max_off = pl_end;
+            }
+        }
+        sec.cur_off = max_off;
+    }
+
     size_t rom_size = sec.cur_off > ROM_MIN_SIZE ? sec.cur_off : ROM_MIN_SIZE;
     /* Round up to power of two >= 0x8000 (32K, 64K, …) */
     {
@@ -1359,6 +1552,15 @@ done:
 }
 
 /* -------------------------------------------------------------------------
+ * Public: asm_assemble (thin wrapper over asm_assemble_mem with NULL mem)
+ * ----------------------------------------------------------------------- */
+
+AsmResult asm_assemble(const char *src, const char *filename)
+{
+    return asm_assemble_mem(src, filename, NULL);
+}
+
+/* -------------------------------------------------------------------------
  * Public: asm_free
  * ----------------------------------------------------------------------- */
 
@@ -1370,5 +1572,6 @@ void asm_free(AsmResult *r)
     free(r->linemap);
     free(r->prov_line);
     free(r->diags);
+    free(r->placements);
     memset(r, 0, sizeof(*r));
 }

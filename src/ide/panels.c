@@ -9,6 +9,8 @@
 
 #include "panels.h"
 #include "../gb/gb.h"
+#include "../gb/disasm.h"
+#include "../gb/debug.h"
 #include "../live/tile.h"
 
 #include <stdio.h>
@@ -318,7 +320,32 @@ void panel_disasm(Canvas *c, IdeState *s) {
     int px, py, pw, ph;
     ide_panel_rect(PANEL_DISASM, &px, &py, &pw, &ph);
     draw_panel(c, px, py, pw, ph, "DISASM");
-    (void)s;
+
+    GB *gb = ide_gb(s);
+    uint8_t bank = gb->rom_bank;
+    uint16_t pc  = gb->cpu.pc;
+    /* Forward-only listing starting at PC (v1 simplification; see plan Task 8). */
+    uint16_t addr = pc;
+
+    int line_h = 8, top = py + 14, rows = (ph - 16) / line_h;
+    for (int r = 0; r < rows; r++) {
+        char text[40];
+        int len = gb_disasm(gb, bank, addr, text, sizeof text);
+        bool is_pc  = (addr == pc);
+        bool has_bp = (gb_debug_find_bp(gb, bank, addr) >= 0);
+        int  ly     = top + r * line_h;
+
+        if (is_pc)
+            ui_fill_rect(c, px + 1, ly, pw - 2, line_h, 0x303820FF);
+        if (has_bp)
+            ui_fill_rect(c, px + 2, ly + 1, 6, 6, 0xFF4040FF);  /* gutter dot */
+
+        char row[64];
+        snprintf(row, sizeof row, "%c%04X %s", is_pc ? '>' : ' ', addr, text);
+        ui_text(c, px + 10, ly, row, is_pc ? 0xFFD700FF : 0xC0E0C0FF);
+
+        addr = (uint16_t)(addr + (len > 0 ? len : 1));
+    }
 }
 
 void panel_palette(Canvas *c, struct GB *gb) {

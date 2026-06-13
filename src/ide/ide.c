@@ -489,6 +489,8 @@ void ide_render(IdeState *s, Canvas *c) {
 
     /* Delegate remaining panels to panels.c */
     panel_registers(c, gb);
+    panel_exec(c, s);
+    panel_disasm(c, s);
     panel_vram_tiles(c, gb, s->selected_tile);
     panel_code(c, s->source);
     panel_tile_editor(c, gb, s->selected_tile, s->paint_color);

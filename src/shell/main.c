@@ -1,5 +1,6 @@
 #include "../gb/gb.h"
 #include "png.h"
+#include <SDL3/SDL.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -29,11 +30,67 @@ static uint8_t *load_file(const char *path, size_t *out) {
     fclose(f); *out = (size_t)n; return d;
 }
 
-int run_window(GB *g, int scale);   /* Task 3 (defined in main.c) */
-
 static void run_one_frame(GB *g) {
     g->frame_ready = false;
     while (!g->frame_ready) gb_step(g);
+}
+
+/* keyboard -> button mask (1=pressed) */
+static uint8_t poll_buttons(const bool *ks) {
+    uint8_t m = 0;
+    if (ks[SDL_SCANCODE_Z])      m |= 0x01;  /* A */
+    if (ks[SDL_SCANCODE_X])      m |= 0x02;  /* B */
+    if (ks[SDL_SCANCODE_RSHIFT]) m |= 0x04;  /* Select */
+    if (ks[SDL_SCANCODE_RETURN]) m |= 0x08;  /* Start */
+    if (ks[SDL_SCANCODE_RIGHT])  m |= 0x10;
+    if (ks[SDL_SCANCODE_LEFT])   m |= 0x20;
+    if (ks[SDL_SCANCODE_UP])     m |= 0x40;
+    if (ks[SDL_SCANCODE_DOWN])   m |= 0x80;
+    return m;
+}
+
+int run_window(GB *g, int scale) {
+    if (!SDL_Init(SDL_INIT_VIDEO)) {
+        fprintf(stderr, "SDL_Init: %s\n", SDL_GetError());
+        return 1;
+    }
+    SDL_Window *win = SDL_CreateWindow("live-gameboy", 160 * scale, 144 * scale, 0);
+    SDL_Renderer *ren = SDL_CreateRenderer(win, NULL);
+    SDL_Texture *tex = SDL_CreateTexture(ren, SDL_PIXELFORMAT_RGBA8888,
+                                         SDL_TEXTUREACCESS_STREAMING, 160, 144);
+    SDL_SetTextureScaleMode(tex, SDL_SCALEMODE_NEAREST);
+
+    static uint8_t rgba[160 * 144 * 4];
+    bool running = true;
+    const double frame_ms = 1000.0 / 59.7273;
+
+    while (running) {
+        SDL_Event ev;
+        while (SDL_PollEvent(&ev)) {
+            if (ev.type == SDL_EVENT_QUIT) running = false;
+            if (ev.type == SDL_EVENT_KEY_DOWN && ev.key.scancode == SDL_SCANCODE_ESCAPE)
+                running = false;
+        }
+        int nkeys;
+        const bool *ks = SDL_GetKeyboardState(&nkeys);
+        gb_set_buttons(g, poll_buttons(ks));
+
+        run_one_frame(g);
+
+        framebuffer_to_rgba(gb_framebuffer(g), rgba, 1);   /* texture is 160x144; scale via renderer */
+        SDL_UpdateTexture(tex, NULL, rgba, 160 * 4);
+        SDL_RenderClear(ren);
+        SDL_RenderTexture(ren, tex, NULL, NULL);
+        SDL_RenderPresent(ren);
+
+        SDL_Delay((Uint32)frame_ms);    /* coarse pacing; good enough without audio sync */
+    }
+
+    SDL_DestroyTexture(tex);
+    SDL_DestroyRenderer(ren);
+    SDL_DestroyWindow(win);
+    SDL_Quit();
+    return 0;
 }
 
 static int run_shot(const char *rom, const char *out, int frames, int scale) {
@@ -67,7 +124,7 @@ int main(int argc, char **argv) {
         int scale  = argc > 5 ? atoi(argv[5]) : 1;
         return run_shot(argv[2], argv[3], frames, scale > 0 ? scale : 1);
     }
-    /* interactive window mode (Task 3) */
+    /* interactive window mode */
     size_t n; uint8_t *data = load_file(argv[1], &n);
     if (!data) return 2;
     GB *g = gb_new();
@@ -78,10 +135,4 @@ int main(int argc, char **argv) {
     int rc = run_window(g, scale > 0 ? scale : 4);
     gb_free(g);
     return rc;
-}
-
-int run_window(GB *g, int scale) {
-    (void)g; (void)scale;
-    fprintf(stderr, "window mode not built yet\n");
-    return 1;
 }

@@ -28,7 +28,7 @@ $(BUILD)/live/%.o: src/live/%.c src/live/live.h | $(BUILD)/live
 	$(CC) $(CFLAGS) -c $< -o $@
 
 $(BUILD)/%: tests/%.c $(GB_OBJ) $(ASM_OBJ) $(LIVE_OBJ) tests/test.h | $(BUILD)
-	$(CC) $(CFLAGS) $< $(GB_OBJ) $(ASM_OBJ) $(LIVE_OBJ) -o $@
+	$(CC) $(CFLAGS) $< $(GB_OBJ) $(ASM_OBJ) $(LIVE_OBJ) -lz -o $@
 
 $(BUILD) $(BUILD)/gb $(BUILD)/asm $(BUILD)/live:
 	mkdir -p $@

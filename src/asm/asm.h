@@ -320,6 +320,20 @@ typedef struct {
 } AsmRefSite;
 
 /*
+ * AsmAsset records a binary asset file that was included via INCBIN.
+ *
+ * Fields:
+ *   path  — resolved absolute (or relative) path of the asset file
+ *   bytes — heap-allocated copy of the file's bytes
+ *   size  — byte count of the asset
+ */
+typedef struct {
+    char     path[256];
+    uint8_t *bytes;
+    size_t   size;
+} AsmAsset;
+
+/*
  * AsmResult is returned by asm_assemble().  All pointer fields are
  * heap-allocated; call asm_free() when done.
  *
@@ -333,6 +347,13 @@ typedef struct {
  *   nlines      — number of linemap entries
  *   prov_line   — per-byte source line: prov_line[off] = 1-based source line
  *                 that produced byte at linear ROM offset `off`, or -1.
+ *                 INCBIN bytes are marked -2 (PROV_ASSET sentinel).
+ *   prov_asset  — per-byte asset index: prov_asset[off] = index into assets[]
+ *                 for INCBIN bytes, or -1 for non-asset bytes. (rom_size entries)
+ *   prov_asset_off — per-byte offset within the asset: prov_asset_off[off] = byte
+ *                 offset within assets[prov_asset[off]].bytes. (rom_size entries)
+ *   assets      — table of INCBIN'd asset files (nassets entries)
+ *   nassets     — number of distinct assets
  *   diags       — diagnostics list (ndiags entries)
  *   ok          — false if any error occurred; ROM content is partial.
  *   placements  — function placements used in this build (nplacements entries)
@@ -350,7 +371,12 @@ typedef struct {
     struct { int line; uint32_t off; } *linemap;
     int nlines;
 
-    int32_t  *prov_line;   /* rom_size entries */
+    int32_t  *prov_line;      /* rom_size entries; -2 = INCBIN byte */
+    int32_t  *prov_asset;     /* rom_size entries; asset index or -1 */
+    uint32_t *prov_asset_off; /* rom_size entries; byte offset within asset */
+
+    AsmAsset *assets;  /* INCBIN'd asset files */
+    int       nassets;
 
     AsmDiag  *diags;
     int       ndiags;

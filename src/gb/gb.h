@@ -80,6 +80,12 @@ typedef struct GB {
     size_t serial_len;
 
     uint64_t cycles;       /* T-cycles since reset */
+
+    /* VRAM provenance — ROM->VRAM copy taint */
+    uint32_t vram_prov[0x2000]; /* linear ROM offset that wrote each VRAM byte; 0xFFFFFFFF = none */
+    uint32_t prov_pending;      /* pending source ROM offset (set by last ROM operand read) */
+    bool     prov_pending_valid;/* true if prov_pending holds a valid taint */
+    bool     fetching_opcode;   /* true while cpu.c is fetching the opcode byte (not an operand) */
 } GB;
 
 GB  *gb_new(void);
@@ -120,6 +126,9 @@ int     gb_audio_read(GB *gb, float *out, int max_samples); /* drains ring; ster
 /* Untimed bus access (tests, future debugger). CPU wraps these with ticks. */
 uint8_t gb_read8(GB *gb, uint16_t addr);
 void    gb_write8(GB *gb, uint16_t addr, uint8_t v);
+
+/* VRAM provenance reset — fills vram_prov with 0xFFFFFFFF, clears pending state */
+void gb_vram_prov_reset(GB *gb);
 
 /* interrupt bits in IE/IF */
 #define INT_VBLANK 0x01

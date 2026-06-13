@@ -1379,14 +1379,18 @@ AsmResult asm_assemble_mem(const char *src, const char *filename,
         rom_size = sz;
     }
 
-    r.rom      = calloc(1, rom_size);
-    r.prov_line = malloc(rom_size * sizeof(int32_t));
-    if (!r.rom || !r.prov_line) {
+    r.rom            = calloc(1, rom_size);
+    r.prov_line      = malloc(rom_size * sizeof(int32_t));
+    r.prov_asset     = malloc(rom_size * sizeof(int32_t));
+    r.prov_asset_off = malloc(rom_size * sizeof(uint32_t));
+    if (!r.rom || !r.prov_line || !r.prov_asset || !r.prov_asset_off) {
         push_diag(&r, 0, "ROM allocation failure");
         goto done;
     }
     r.rom_size = rom_size;
-    memset(r.prov_line, 0xFF, rom_size * sizeof(int32_t)); /* -1 = unknown */
+    memset(r.prov_line,  0xFF, rom_size * sizeof(int32_t));  /* -1 = unknown */
+    memset(r.prov_asset, 0xFF, rom_size * sizeof(int32_t));  /* -1 = none */
+    memset(r.prov_asset_off, 0, rom_size * sizeof(uint32_t));
 
     /* ------------------------------------------------------------------
      * Pass 2: encode bytes
@@ -1626,7 +1630,8 @@ AsmResult asm_assemble_mem(const char *src, const char *filename,
             case DIR_INCBIN: {
                 /*
                  * Pass 2: read the file and copy bytes into ROM; mark as
-                 * PROV_ASSET (-2) in prov_line.
+                 * PROV_ASSET (-2) in prov_line; register asset and fill
+                 * prov_asset / prov_asset_off per-byte provenance.
                  */
                 if (s->dir.args_count < 1) break;
                 const AsmToken *ft = &toks[s->dir.args_start];
@@ -1656,8 +1661,43 @@ AsmResult asm_assemble_mem(const char *src, const char *filename,
                 rewind(fh);
                 if (fsz > 0 && sec.cur_off + (uint32_t)fsz <= r.rom_size) {
                     if (fread(&r.rom[sec.cur_off], 1, (size_t)fsz, fh) == (size_t)fsz) {
-                        for (long k = 0; k < fsz; k++)
-                            r.prov_line[sec.cur_off + (uint32_t)k] = PROV_ASSET;
+                        /* Register asset (dedup by resolved path) */
+                        int asset_id = -1;
+                        for (int ai = 0; ai < r.nassets; ai++) {
+                            if (strcmp(r.assets[ai].path, fname) == 0) {
+                                asset_id = ai;
+                                break;
+                            }
+                        }
+                        if (asset_id < 0) {
+                            /* New asset — store path + copy of bytes */
+                            AsmAsset *na = realloc(r.assets,
+                                                   (size_t)(r.nassets + 1) * sizeof(AsmAsset));
+                            if (na) {
+                                r.assets = na;
+                                asset_id = r.nassets++;
+                                AsmAsset *a = &r.assets[asset_id];
+                                size_t plen = strlen(fname);
+                                if (plen >= sizeof(a->path)) plen = sizeof(a->path) - 1;
+                                memcpy(a->path, fname, plen);
+                                a->path[plen] = '\0';
+                                a->size  = (size_t)fsz;
+                                a->bytes = malloc((size_t)fsz);
+                                if (a->bytes)
+                                    memcpy(a->bytes, &r.rom[sec.cur_off], (size_t)fsz);
+                                else
+                                    asset_id = -1; /* allocation failure; skip prov */
+                            }
+                        }
+                        /* Mark prov_line and per-byte provenance */
+                        for (long k = 0; k < fsz; k++) {
+                            uint32_t off = sec.cur_off + (uint32_t)k;
+                            r.prov_line[off] = PROV_ASSET;
+                            if (asset_id >= 0) {
+                                r.prov_asset[off]     = (int32_t)asset_id;
+                                r.prov_asset_off[off] = (uint32_t)k;
+                            }
+                        }
                         linemap_push(&r, s->line, sec.cur_off);
                     }
                 }
@@ -1789,6 +1829,11 @@ void asm_free(AsmResult *r)
     free(r->syms);
     free(r->linemap);
     free(r->prov_line);
+    free(r->prov_asset);
+    free(r->prov_asset_off);
+    for (int i = 0; i < r->nassets; i++)
+        free(r->assets[i].bytes);
+    free(r->assets);
     free(r->diags);
     free(r->placements);
     free(r->refs);

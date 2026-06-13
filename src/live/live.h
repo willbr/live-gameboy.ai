@@ -87,4 +87,12 @@ void         live_free(LiveSession *s);
 /* patch_report_free — release memory owned by a PatchReport. */
 void         patch_report_free(PatchReport *r);
 
+/*
+ * live_result — return a pointer to the session's current AsmResult (build
+ * database: assets, prov_asset, prov_asset_off, rom_size, etc.).
+ * The pointer is valid until the next live_reload / live_soft_reload / live_free.
+ * Never NULL after a successful live_new.
+ */
+AsmResult   *live_result(LiveSession *s);
+
 #endif /* LIVE_H */

@@ -11,7 +11,7 @@ Design: docs/superpowers/specs/2026-06-12-live-gameboy-design.md
 - [x] Milestone 2: SDL3 shell, pixel-FIFO PPU, APU
 - [x] Milestone 3: built-in SM83 assembler (`gbasm`) — RGBDS-inspired syntax, two-pass, build database
 - [x] Milestone 4: live patching — edit a function in a running game, state intact (headless engine; editor UI in M6)
-- [ ] Milestone 5: live tile editing
+- [x] Milestone 5: live tile editing — paint a pixel, the running screen updates via VRAM provenance (PNG import/export); headless engine, editor UI in M6
 - [ ] Milestone 6: debug panels, ROM export
 
 ## Build
@@ -59,6 +59,29 @@ sequential reloads (in-place → reloc → refused → in-place recovery) with t
 $C000 counter verified to never decrease across transitions. The public API is
 `live_new` / `live_reload` / `live_soft_reload` / `live_gb` / `live_free` /
 `patch_report_free` (see `src/live/live.h`).
+
+## Live tiles
+
+The M5 tile editor (`src/live/tile.c`) lets you paint a pixel in a tile asset
+and watch it change on the running game's screen immediately — no reload, no
+state loss:
+
+1. **Paint a pixel** — `tile_paint(session, asset_path, tile, x, y, color)`
+   updates the in-memory asset (2bpp format).
+2. **Asset → live ROM** — the build database records which ROM bytes came from
+   which asset offset (asset provenance); the new pixel bytes are written
+   directly into `gb->rom`.
+3. **Live ROM → live VRAM** — a VRAM provenance shadow map (`vram_prov[0x2000]`)
+   tracks which VRAM bytes were copied from which ROM offsets (via the standard
+   `ld a,(hl+) ; ld (de),a` idiom); matching VRAM bytes are updated in place.
+4. **Screen updates** — the PPU renders from the updated VRAM on the very next
+   frame; the on-screen tile changes without any game reload.
+
+PNG import/export is also supported (`tile_sheet_to_png` / `tile_sheet_from_png`).
+The full flow is headless-tested in `tests/test_live_tile.c`: boot a program
+that copies a tile from ROM into VRAM and renders it, paint a pixel, assert the
+live framebuffer pixel changes immediately with no reload and RAM untouched.
+Procedurally-generated VRAM (no provenance) is correctly left untouched.
 
 ## Sound
 

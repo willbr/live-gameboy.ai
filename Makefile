@@ -25,6 +25,9 @@ test: $(TESTBIN)
 $(BUILD)/blargg: tests/blargg.c $(GB_OBJ) | $(BUILD)
 	$(CC) $(CFLAGS) $< $(GB_OBJ) -o $@
 
+$(BUILD)/blargg_sound: tests/blargg_sound.c $(GB_OBJ) | $(BUILD)
+	$(CC) $(CFLAGS) $< $(GB_OBJ) -o $@
+
 roms:
 	mkdir -p roms
 	test -d roms/gb-test-roms || git clone --depth 1 https://github.com/retrio/gb-test-roms roms/gb-test-roms
@@ -32,6 +35,9 @@ roms:
 blargg: $(BUILD)/blargg
 	./$(BUILD)/blargg roms/gb-test-roms/cpu_instrs/cpu_instrs.gb
 	./$(BUILD)/blargg roms/gb-test-roms/instr_timing/instr_timing.gb
+
+sound: $(BUILD)/blargg_sound
+	./$(BUILD)/blargg_sound "roms/gb-test-roms/dmg_sound/rom_singles/01-registers.gb"
 
 $(BUILD)/dmg_acid2: tests/dmg_acid2.c $(GB_OBJ) | $(BUILD)
 	$(CC) $(CFLAGS) $< $(GB_OBJ) -o $@
@@ -54,4 +60,4 @@ shell-shot: live-gameboy
 clean:
 	rm -rf $(BUILD) live-gameboy
 
-.PHONY: all test blargg roms clean acid2 shell-shot
+.PHONY: all test blargg roms clean acid2 shell-shot sound

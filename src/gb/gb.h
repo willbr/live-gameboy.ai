@@ -22,6 +22,7 @@ typedef struct GB {
     uint8_t rom_bank;       /* current bank mapped at 0x4000-0x7FFF */
     uint8_t vram[0x2000];
     uint8_t wram[0x2000];
+    uint8_t cart_ram[0x2000];  /* 8KB cart RAM (A000-BFFF); used by blargg test output */
     uint8_t oam[0xA0];
     uint8_t hram[0x7F];
     uint8_t io[0x80];      /* raw backing for not-yet-modeled IO regs */

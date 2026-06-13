@@ -29,3 +29,10 @@ jobs:
           else
             echo "SDL3 not available on runner; skipping shell build"
           fi
+      - name: build IDE + headless ide-shot
+        run: |
+          if pkg-config --exists sdl3; then
+            make live-gameboy-ide && make ide-shot
+          else
+            echo "SDL3 not available on runner; skipping IDE build"
+          fi

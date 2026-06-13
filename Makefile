@@ -91,7 +91,11 @@ live-gameboy-ide: src/ide/main.c $(IDE_OBJ) $(GB_OBJ) $(ASM_OBJ) $(LIVE_OBJ)
 shell-shot: live-gameboy
 	./live-gameboy --shot roms/dmg-acid2.gb build/shell-acid2.png 60 2
 
+# IDE headless screenshot gate (no window required)
+ide-shot: live-gameboy-ide
+	./live-gameboy-ide --ide-shot examples/demo.asm build/ide.png 60
+
 clean:
 	rm -rf $(BUILD) live-gameboy live-gameboy-ide gbasm
 
-.PHONY: all test blargg roms clean acid2 shell-shot sound gbasm asm-demo live-gameboy-ide
+.PHONY: all test blargg roms clean acid2 shell-shot sound gbasm asm-demo live-gameboy-ide ide-shot

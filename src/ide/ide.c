@@ -341,29 +341,31 @@ bool ide_paint_at(IdeState *s, int mx, int my) {
     int tx = (mx - ox) / TILE_EDITOR_ZOOM;
     int ty = (my - oy) / TILE_EDITOR_ZOOM;
 
-    /* tile_paint needs an asset_path — use NULL/"" to mean "any asset" is not
-     * supported by the API; we pass the path stored in the live result. */
     AsmResult *res = live_result(s->live);
     if (!res || res->nassets == 0) return false;
 
-    /* Find the asset that contains the selected tile */
-    int ti = s->selected_tile;
-    int offset = 0;
-    int asset_idx = -1;
-    for (int i = 0; i < res->nassets; i++) {
-        int ntiles = (int)(res->assets[i].size / 16);
-        if (ti < offset + ntiles) {
-            asset_idx = i;
-            ti -= offset;  /* tile index within this asset */
-            break;
-        }
-        offset += ntiles;
-    }
-    if (asset_idx < 0) return false;
+    /* Map the selected VRAM tile back to the source asset that produced it.
+     * selected_tile is a VRAM tile index (the viewer/editor show gb->vram[ti*16]),
+     * NOT an asset index — the two differ whenever tiles aren't loaded
+     * contiguously from VRAM tile 0 in asset order. Walk the provenance chain:
+     *   VRAM byte -> vram_prov[] -> ROM offset -> prov_asset[]/prov_asset_off[]
+     *   -> asset index + byte offset -> asset tile index. */
+    int vti = s->selected_tile;
+    if (vti < 0 || vti >= 0x1800 / 16) return false;   /* 384 tiles in VRAM */
+
+    uint32_t voff = (uint32_t)(vti * 16);              /* VRAM byte offset of tile */
+    uint32_t rom_off = s->gb->vram_prov[voff];
+    if (rom_off == 0xFFFFFFFFu) return false;          /* tile not from a tracked copy */
+    if (rom_off >= res->rom_size) return false;
+
+    int32_t asset_idx = res->prov_asset[rom_off];
+    if (asset_idx < 0 || asset_idx >= res->nassets) return false;  /* not an INCBIN byte */
+
+    int asset_tile = (int)(res->prov_asset_off[rom_off] / 16);
 
     char err[128] = "";
     return tile_paint(s->live, res->assets[asset_idx].path,
-                      ti, tx, ty, (uint8_t)s->paint_color, err, sizeof(err));
+                      asset_tile, tx, ty, (uint8_t)s->paint_color, err, sizeof(err));
 }
 
 int ide_select_tile_at(IdeState *s, int mx, int my) {

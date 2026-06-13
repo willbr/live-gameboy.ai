@@ -1,21 +1,30 @@
 /*
  * ide.c — IDE state, panel rendering, headless shot helper.
  *
- * Canvas convention: 640 x 432 pixels (RGBA8888).
+ * Canvas convention: 1024 x 720 pixels (RGBA8888).
  *
  * Panel layout (pixels):
- *   [0] Game screen   x=  8 y=  8  w=336 h=304  (160x144 GB screen @ scale=2, inside a 336x304 box)
- *   [1] Registers     x=352 y=  8  w=280 h=152
- *   [2] VRAM viewer   x=352 y=168  w=280 h=148
- *   [3] Code pane     x=  8 y=320  w=336 h= 54
- *   [4] Tile editor   x=352 y=320  w=280 h= 54
- *   [5] Mem hex       x=  8 y=382  w=624 h= 40
- *   [6] Status line   x=  8 y=424  w=624 h=  8
+ *   [0]  Game screen    x=  8 y=  8  w=336 h=304
+ *   [1]  Registers      x=352 y=  8  w=320 h=120
+ *   [2]  VRAM tiles     x=680 y=  8  w=336 h=148
+ *   [3]  Code pane      x=  8 y=320  w=336 h=150
+ *   [4]  Tile editor    x=  8 y=478  w=336 h=120
+ *   [5]  Mem hex        x=  8 y=606  w=1008 h= 80
+ *   [6]  Status line    x=  8 y=706  w=1008 h=  8
+ *   [7]  Exec           x=352 y=136  w=320 h= 62
+ *   [8]  Disasm         x=352 y=206  w=320 h=392
+ *   [9]  Palette        x=680 y=164  w=336 h= 36
+ *   [10] OAM            x=680 y=208  w=336 h=192
+ *   [11] Tilemap        x=680 y=408  w=336 h=190
+ *   [12] Addr input     x=  8 y=690  w=1008 h= 12
  */
 
 #include "ide.h"
+#include "panels.h"
 #include "../live/live.h"
 #include "../live/tile.h"
+#include "../gb/debug.h"
+#include "../gb/disasm.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -36,6 +45,8 @@ struct IdeState {
     char         status[256];
     int          frame_counter;
     uint16_t     mem_base;  /* base address for hex panel (default 0xC000) */
+    ExecMode     exec_mode; /* execution-control state machine */
+    TextField    addr;      /* address-entry field for breakpoint input */
 };
 
 /* -------------------------------------------------------------------------
@@ -141,6 +152,9 @@ IdeState *ide_new(const char *path) {
         snprintf(s->status, sizeof(s->status), "ROM loaded: %s", path);
     }
 
+    gb_debug_attach(s->gb);
+    s->exec_mode = EXEC_RUNNING;
+
     return s;
 }
 
@@ -154,6 +168,53 @@ void ide_step_frame(IdeState *s) {
     while (!s->gb->frame_ready)
         gb_step(s->gb);
     s->frame_counter++;
+}
+
+/* -------------------------------------------------------------------------
+ * Execution-control state machine
+ * ------------------------------------------------------------------------- */
+
+ExecMode ide_exec_mode(IdeState *s) { return s ? s->exec_mode : EXEC_PAUSED; }
+struct GbDebug *ide_debug(IdeState *s) { return s ? s->gb->dbg : NULL; }
+
+void ide_pause(IdeState *s)           { if (s) s->exec_mode = EXEC_PAUSED; }
+void ide_resume(IdeState *s)          { if (s) { gb_debug_resume(s->gb); s->exec_mode = EXEC_RUNNING; } }
+void ide_step_insn(IdeState *s)       { if (s) { gb_debug_resume(s->gb); s->exec_mode = EXEC_STEP_INSN; } }
+void ide_step_line(IdeState *s)       { if (s) { gb_debug_resume(s->gb); s->exec_mode = EXEC_STEP_LINE; } }
+void ide_step_frame_once(IdeState *s) { if (s) { gb_debug_resume(s->gb); s->exec_mode = EXEC_STEP_FRAME; } }
+
+static bool dbg_hit(GB *g) { return g->dbg && g->dbg->hit; }
+
+void ide_run_slice(IdeState *s) {
+    if (!s) return;
+    GB *g = s->gb;
+    switch (s->exec_mode) {
+    case EXEC_PAUSED:
+        return;
+    case EXEC_RUNNING:
+        g->frame_ready = false;
+        while (!g->frame_ready) {
+            gb_step(g);
+            if (dbg_hit(g)) { s->exec_mode = EXEC_PAUSED; return; }
+        }
+        s->frame_counter++;
+        return;
+    case EXEC_STEP_INSN:
+        gb_step(g);
+        s->exec_mode = EXEC_PAUSED;
+        return;
+    case EXEC_STEP_LINE: {
+        uint8_t ly0 = g->ly;
+        do { gb_step(g); } while (g->ly == ly0 && !g->frame_ready && !dbg_hit(g));
+        s->exec_mode = EXEC_PAUSED;
+        return;
+    }
+    case EXEC_STEP_FRAME:
+        g->frame_ready = false;
+        while (!g->frame_ready && !dbg_hit(g)) gb_step(g);
+        s->exec_mode = EXEC_PAUSED;
+        return;
+    }
 }
 
 /* -------------------------------------------------------------------------
@@ -195,27 +256,33 @@ int ide_paint_color(IdeState *s) {
  * shell.  Keep these constants in sync with the draw calls in ide_render.
  * ------------------------------------------------------------------------- */
 
-/* Panel rectangles: {x, y, w, h} */
-static const int PANEL_RECTS[7][4] = {
-    {  8,   8, 336, 304 },  /* PANEL_GAME        */
-    { 352,  8, 280, 152 },  /* PANEL_REGISTERS   */
-    { 352, 168, 280, 148 }, /* PANEL_VRAM_TILES  */
-    {  8, 320, 336,  54 },  /* PANEL_CODE        */
-    { 352, 320, 280,  54 }, /* PANEL_TILE_EDITOR */
-    {  8, 382, 624,  40 },  /* PANEL_MEM_HEX     */
-    {  8, 424, 624,   8 },  /* PANEL_STATUS      */
+/* Panel rectangles: {x, y, w, h} — single source of truth. */
+static const struct { int x, y, w, h; } PANEL_RECTS[PANEL_COUNT] = {
+    [PANEL_GAME]        = {   8,   8, 336, 304 },
+    [PANEL_REGISTERS]   = { 352,   8, 320, 120 },
+    [PANEL_EXEC]        = { 352, 136, 320,  62 },
+    [PANEL_DISASM]      = { 352, 206, 320, 392 },
+    [PANEL_VRAM_TILES]  = { 680,   8, 336, 148 },
+    [PANEL_PALETTE]     = { 680, 164, 336,  36 },
+    [PANEL_OAM]         = { 680, 208, 336, 192 },
+    [PANEL_TILEMAP]     = { 680, 408, 336, 190 },
+    [PANEL_CODE]        = {   8, 320, 336, 150 },
+    [PANEL_TILE_EDITOR] = {   8, 478, 336, 120 },
+    [PANEL_MEM_HEX]     = {   8, 606,1008,  80 },
+    [PANEL_ADDR_INPUT]  = {   8, 690,1008,  12 },
+    [PANEL_STATUS]      = {   8, 706,1008,   8 },
 };
 
 void ide_panel_rect(IdePanel panel, int *x, int *y, int *w, int *h) {
     int idx = (int)panel;
-    if (idx < 0 || idx >= 7) {
+    if (idx < 0 || idx >= PANEL_COUNT) {
         if (x) *x = 0; if (y) *y = 0; if (w) *w = 0; if (h) *h = 0;
         return;
     }
-    if (x) *x = PANEL_RECTS[idx][0];
-    if (y) *y = PANEL_RECTS[idx][1];
-    if (w) *w = PANEL_RECTS[idx][2];
-    if (h) *h = PANEL_RECTS[idx][3];
+    if (x) *x = PANEL_RECTS[idx].x;
+    if (y) *y = PANEL_RECTS[idx].y;
+    if (w) *w = PANEL_RECTS[idx].w;
+    if (h) *h = PANEL_RECTS[idx].h;
 }
 
 /* Tile editor zoom must match ide_render's Panel[4] zoom value */
@@ -230,7 +297,7 @@ void ide_panel_rect(IdePanel panel, int *x, int *y, int *w, int *h) {
 #define SWATCH_H   16
 #define SWATCH_GAP 4
 static void swatch_rect(int i, int *x, int *y, int *w, int *h) {
-    int px = 352, py = 320;                 /* PANEL_TILE_EDITOR origin */
+    int px = 8, py = 478;                   /* PANEL_TILE_EDITOR origin */
     int base_x = px + 4 + 8 * TILE_EDITOR_ZOOM + 14;  /* right of the 40px tile */
     int base_y = py + 16;
     *x = base_x + i * (SWATCH_W + SWATCH_GAP);
@@ -372,15 +439,13 @@ bool ide_soft_reset_from_file(IdeState *s, const char *path) {
 }
 
 /* -------------------------------------------------------------------------
- * Panel colors
+ * Colors / palettes used by ide_render (game panel + background only)
+ * All other panel colors live in panels.c.
  * ------------------------------------------------------------------------- */
 
 #define COL_BG        0x1A1A2EFF  /* dark navy background */
 #define COL_BORDER    0x4A4A7AFF  /* panel border */
 #define COL_TITLE     0xE0E0FFFF  /* panel title text */
-#define COL_TEXT      0xC0C0D0FF  /* normal text */
-#define COL_DIM       0x606070FF  /* dim text */
-#define COL_HIGHLIGHT 0xFFD700FF  /* gold highlight */
 #define COL_PANEL_BG  0x12122AFF  /* slightly different panel bg */
 
 /* DMG green palette: shade 0=lightest, 3=darkest (0xRRGGBBAA) */
@@ -391,16 +456,8 @@ static const uint32_t DMG_PAL[4] = {
     0x081820FF   /* 3 — darkest */
 };
 
-/* Gray palette for VRAM tile viewer (maps shade -> gray RGBA) */
-static const uint32_t VRAM_PAL[4] = {
-    0xFFFFFFFF,
-    0xAAAAAAFF,
-    0x555555FF,
-    0x000000FF
-};
-
 /* -------------------------------------------------------------------------
- * Panel helpers
+ * Panel helper used by ide_render for the GAME panel
  * ------------------------------------------------------------------------- */
 
 static void draw_panel(Canvas *c, int x, int y, int w, int h, const char *title) {
@@ -428,235 +485,119 @@ void ide_render(IdeState *s, Canvas *c) {
     {
         int px = 8, py = 8, pw = 336, ph = 304;
         draw_panel(c, px, py, pw, ph, "GAME");
-        /* blit at (px+8, py+8) so there's an inner margin */
+        /* blit at (px+8, py+10) so there's an inner margin */
         ui_blit_gb(c, gb_framebuffer(gb), px + 8, py + 10, 2, DMG_PAL);
     }
 
-    /* -----------------------------------------------------------------------
-     * Panel [1]: Registers — x=352, y=8, w=280, h=152
-     * --------------------------------------------------------------------- */
-    {
-        int px = 352, py = 8, pw = 280, ph = 152;
-        draw_panel(c, px, py, pw, ph, "REGISTERS");
+    /* Delegate remaining panels to panels.c */
+    panel_registers(c, gb);
+    panel_exec(c, s);
+    panel_disasm(c, s);
+    panel_vram_tiles(c, gb, s->selected_tile);
+    panel_palette(c, gb);
+    panel_oam(c, ide_gb(s));
+    panel_tilemap(c, ide_gb(s));
+    panel_code(c, s->source);
+    panel_tile_editor(c, gb, s->selected_tile, s->paint_color);
+    panel_mem_hex(c, gb, s->mem_base);
+    panel_status(c, s->frame_counter, s->status);
+    ide_addr_render(s, c);
+}
 
-        CPU *cpu = &gb->cpu;
-        char buf[80];
-        int tx = px + 4, ty = py + 12;
+/* -------------------------------------------------------------------------
+ * Task 13: Panel-click and address-field glue
+ * ------------------------------------------------------------------------- */
 
-        /* AF, BC, DE, HL */
-        snprintf(buf, sizeof(buf), "AF=%02X%02X  BC=%02X%02X",
-                 cpu->a, cpu->f, cpu->b, cpu->c);
-        ui_text(c, tx, ty, buf, COL_TEXT); ty += 10;
+bool ide_disasm_click(IdeState *s, int mx, int my) {
+    if (!s) return false;
+    int x, y, w, h;
+    ide_panel_rect(PANEL_DISASM, &x, &y, &w, &h);
+    if (mx < x || mx >= x + w || my < y + 14 || my >= y + h) return false;
+    int row = (my - (y + 14)) / 8;
+    GB *gb = s->gb;
+    uint8_t bank = gb->rom_bank;
+    /* Mirror panel_disasm exactly: forward-only listing starting at pc. */
+    uint16_t addr = gb->cpu.pc;
+    char tmp[40];
+    for (int r = 0; r < row; r++)
+        addr = (uint16_t)(addr + gb_disasm(gb, bank, addr, tmp, sizeof tmp));
+    gb_debug_toggle_bp(gb, bank, addr);
+    return true;
+}
 
-        snprintf(buf, sizeof(buf), "DE=%02X%02X  HL=%02X%02X",
-                 cpu->d, cpu->e, cpu->h, cpu->l);
-        ui_text(c, tx, ty, buf, COL_TEXT); ty += 10;
-
-        snprintf(buf, sizeof(buf), "SP=%04X  PC=%04X",
-                 cpu->sp, cpu->pc);
-        ui_text(c, tx, ty, buf, COL_TEXT); ty += 12;
-
-        /* Flags: Z N H C — bright if set, dim if clear */
-        uint8_t f = cpu->f;
-        uint32_t cZ = (f & 0x80) ? COL_HIGHLIGHT : COL_DIM;
-        uint32_t cN = (f & 0x40) ? COL_HIGHLIGHT : COL_DIM;
-        uint32_t cH = (f & 0x20) ? COL_HIGHLIGHT : COL_DIM;
-        uint32_t cC = (f & 0x10) ? COL_HIGHLIGHT : COL_DIM;
-
-        ui_text(c, tx,      ty, "F:", COL_TEXT);
-        ui_text(c, tx + 20, ty, "Z", cZ);
-        ui_text(c, tx + 30, ty, "N", cN);
-        ui_text(c, tx + 40, ty, "H", cH);
-        ui_text(c, tx + 50, ty, "C", cC);
-        ty += 12;
-
-        /* PPU state */
-        snprintf(buf, sizeof(buf), "MODE=%d  LY=%3d", gb->ppu_mode, gb->ly);
-        ui_text(c, tx, ty, buf, COL_TEXT); ty += 10;
-
-        snprintf(buf, sizeof(buf), "LCDC=%02X  BGP=%02X", gb->lcdc, gb->bgp);
-        ui_text(c, tx, ty, buf, COL_TEXT); ty += 10;
-
-        snprintf(buf, sizeof(buf), "SCX=%3d  SCY=%3d", gb->scx, gb->scy);
-        ui_text(c, tx, ty, buf, COL_TEXT); ty += 10;
-
-        snprintf(buf, sizeof(buf), "STAT=%02X", gb->stat);
-        ui_text(c, tx, ty, buf, COL_DIM);
-    }
-
-    /* -----------------------------------------------------------------------
-     * Panel [2]: VRAM tile viewer — x=352, y=168, w=280, h=148
-     * Draw the first 64 tiles in an 8-column grid.
-     * Each tile is drawn as 8x8 pixels (1:1), so 8 cols * 8px = 64px wide,
-     * with a 2px gap -> 8*(8+1)+1 = 73px. Tiles are 2 bytes per row each.
-     * --------------------------------------------------------------------- */
-    {
-        int px = 352, py = 168, pw = 280, ph = 148;
-        draw_panel(c, px, py, pw, ph, "VRAM TILES");
-
-        /* Draw 64 tiles in 8 columns x 8 rows. Each tile cell = 9x9 (8px + 1px gap). */
-        int cols = 16;      /* 16 tiles per row */
-        int scale = 1;
-        int ox = px + 4;
-        int oy = py + 12;
-
-        for (int ti = 0; ti < 64 && ti < (0x1800 / 16); ti++) {
-            int col = ti % cols;
-            int row = ti / cols;
-            int tx = ox + col * (8 * scale + 1);
-            int ty = oy + row * (8 * scale + 1);
-
-            const uint8_t *tile16 = &gb->vram[ti * 16];
-
-            /* Draw a highlight border if this is the selected tile */
-            if (ti == s->selected_tile)
-                ui_rect(c, tx - 1, ty - 1, 8 * scale + 2, 8 * scale + 2, COL_HIGHLIGHT);
-
-            for (int py2 = 0; py2 < 8; py2++) {
-                for (int px2 = 0; px2 < 8; px2++) {
-                    uint8_t shade = tile2bpp_get(tile16, px2, py2);
-                    uint32_t col_rgba = VRAM_PAL[shade];
-                    ui_fill_rect(c, tx + px2 * scale, ty + py2 * scale,
-                                 scale, scale, col_rgba);
-                }
-            }
+bool ide_memhex_click(IdeState *s, int mx, int my) {
+    if (!s) return false;
+    int x, y, w, h;
+    ide_panel_rect(PANEL_MEM_HEX, &x, &y, &w, &h);
+    if (mx < x || mx >= x + w || my < y || my >= y + h) return false;
+    /* Mirror panel_mem_hex geometry:
+     *   tx = x + 4  (label origin)
+     *   label "%04X:" = 5 chars = 40px  → label ends at tx+40
+     *   each byte entry " %02X" = 3 chars; cell_x = tx + (5 + b*3)*8 + 8
+     *   so first cell (b=0) starts at tx + 48  =  x + 52
+     *   stride between cells = 3*8 = 24px
+     *   cell width of the two hex-digit chars = 16px (2 chars * 8px)       */
+    int tx = x + 4;
+    int first_cell = tx + 48;   /* tx + (5+0*3)*8 + 8 = tx + 48 */
+    int stride = 24;            /* 3 chars * 8px per char */
+    int col = (mx - first_cell) / stride;
+    int line_h = 9;             /* matches panel_mem_hex line_h */
+    int rowi = (my - (y + 12)) / line_h;
+    if (col < 0 || col > 15 || rowi < 0) return false;
+    uint16_t a = (uint16_t)(s->mem_base + rowi * 16 + col);
+    /* Toggle watchpoint: remove if present, add r+w if absent. */
+    if (s->gb->dbg) {
+        int idx = -1;
+        for (int i = 0; i < s->gb->dbg->wp_count; i++) {
+            if (s->gb->dbg->wp[i].addr == a) { idx = i; break; }
         }
+        if (idx >= 0)
+            gb_debug_clear_wp(s->gb, idx);
+        else
+            gb_debug_add_wp(s->gb, a, true, true);
     }
+    return true;
+}
 
-    /* -----------------------------------------------------------------------
-     * Panel [3]: Code pane — x=8, y=320, w=336, h=54
-     * Show up to 5 lines of source (8px font, 10px line spacing).
-     * --------------------------------------------------------------------- */
-    {
-        int px = 8, py = 320, pw = 336, ph = 54;
-        draw_panel(c, px, py, pw, ph, "CODE");
-
-        int tx = px + 4, ty = py + 12;
-        int line_h = 9;
-        int max_lines = (ph - 14) / line_h;
-        int max_cols  = (pw - 6) / 8;
-
-        if (s->source) {
-            const char *p = s->source;
-            int ln = 0;
-            while (*p && ln < max_lines) {
-                /* find end of line */
-                const char *eol = p;
-                while (*eol && *eol != '\n') eol++;
-
-                /* copy at most max_cols chars */
-                char line[128];
-                int len = (int)(eol - p);
-                if (len > max_cols - 1) len = max_cols - 1;
-                if (len < 0) len = 0;
-                memcpy(line, p, (size_t)len);
-                line[len] = '\0';
-
-                ui_text(c, tx, ty, line, COL_TEXT);
-                ty += line_h;
-                ln++;
-
-                if (*eol == '\n') eol++;
-                p = eol;
-            }
-        } else {
-            ui_text(c, tx, ty, "(no source)", COL_DIM);
-        }
+void ide_addr_focus(IdeState *s, bool on) {
+    if (!s) return;
+    if (on) {
+        textfield_clear(&s->addr);
+        s->addr.active = true;
+    } else {
+        s->addr.active = false;
     }
+}
 
-    /* -----------------------------------------------------------------------
-     * Panel [4]: Tile editor — x=352, y=320, w=280, h=54
-     * Draw the selected tile zoomed: each pixel = 6x6, with a grid.
-     * --------------------------------------------------------------------- */
-    {
-        int px = 352, py = 320, pw = 280, ph = 54;
-        char title[32];
-        snprintf(title, sizeof(title), "TILE %d", s->selected_tile);
-        draw_panel(c, px, py, pw, ph, title);
+bool ide_addr_focused(IdeState *s) {
+    return s && s->addr.active;
+}
 
-        int zoom = 5;  /* each GB pixel -> zoom x zoom canvas pixels */
-        int ox = px + 4;
-        int oy = py + 12;
+void ide_addr_putc(IdeState *s, char ch) {
+    if (s) textfield_putc(&s->addr, ch);
+}
 
-        int ti = s->selected_tile;
-        if (ti < 0) ti = 0;
-        if (ti >= 384) ti = 383;  /* VRAM holds 384 tiles (0x1800 bytes / 16) */
+void ide_addr_backspace(IdeState *s) {
+    if (s) textfield_backspace(&s->addr);
+}
 
-        const uint8_t *tile16 = &gb->vram[ti * 16];
-
-        for (int row = 0; row < 8; row++) {
-            for (int col = 0; col < 8; col++) {
-                uint8_t shade = tile2bpp_get(tile16, col, row);
-                uint32_t color = VRAM_PAL[shade];
-                int sx = ox + col * zoom;
-                int sy = oy + row * zoom;
-                ui_fill_rect(c, sx, sy, zoom - 1, zoom - 1, color);
-            }
-        }
-        /* Outer border around the zoomed tile */
-        ui_rect(c, ox - 1, oy - 1, 8 * zoom + 1, 8 * zoom + 1, COL_BORDER);
-
-        /* Color palette: 4 swatches (BGP shades). Active one is highlighted.
-         * Click a swatch (or press 0-3) to choose the paint color. */
-        for (int i = 0; i < 4; i++) {
-            int sx, sy, sw, sh;
-            swatch_rect(i, &sx, &sy, &sw, &sh);
-            ui_fill_rect(c, sx, sy, sw, sh, VRAM_PAL[i]);
-            if (i == s->paint_color)
-                ui_rect(c, sx - 2, sy - 2, sw + 3, sh + 3, COL_HIGHLIGHT);
-            else
-                ui_rect(c, sx - 1, sy - 1, sw + 1, sh + 1, COL_BORDER);
-        }
-        {
-            int lx, ly, lw, lh;
-            swatch_rect(0, &lx, &ly, &lw, &lh);
-            ui_text(c, lx, ly + SWATCH_H + 3, "COLOR", COL_DIM);
-        }
+void ide_addr_commit(IdeState *s) {
+    if (!s || s->addr.len == 0) {
+        if (s) s->addr.active = false;
+        return;
     }
+    unsigned long v = strtoul(s->addr.text, NULL, 16);
+    gb_debug_toggle_bp(s->gb, s->gb->rom_bank, (uint16_t)v);
+    textfield_clear(&s->addr);
+}
 
-    /* -----------------------------------------------------------------------
-     * Panel [5]: Memory hex — x=8, y=382, w=624, h=40
-     * Show 4 rows x 8 bytes of memory from mem_base.
-     * --------------------------------------------------------------------- */
-    {
-        int px = 8, py = 382, pw = 624, ph = 40;
-        draw_panel(c, px, py, pw, ph, "MEMORY");
-
-        int tx = px + 4, ty = py + 12;
-        int line_h = 9;
-        int rows = 3, bytes_per_row = 16;
-
-        char buf[128];
-        for (int r = 0; r < rows; r++) {
-            uint16_t base_addr = (uint16_t)(s->mem_base + (uint16_t)(r * bytes_per_row));
-            int pos = 0;
-            pos += snprintf(buf + pos, sizeof(buf) - (size_t)pos, "%04X:", base_addr);
-            char ascii[17];
-            for (int b = 0; b < bytes_per_row && pos + 4 < (int)sizeof(buf); b++) {
-                uint16_t addr = (uint16_t)(base_addr + (uint16_t)b);
-                uint8_t val = gb_read8(gb, addr);
-                pos += snprintf(buf + pos, sizeof(buf) - (size_t)pos, " %02X", val);
-                ascii[b] = (val >= 0x20 && val < 0x7F) ? (char)val : '.';
-            }
-            ascii[bytes_per_row] = '\0';
-            /* append ascii */
-            if (pos + 3 < (int)sizeof(buf))
-                pos += snprintf(buf + pos, sizeof(buf) - (size_t)pos, "  |%s|", ascii);
-
-            ui_text(c, tx, ty, buf, COL_TEXT);
-            ty += line_h;
-        }
-    }
-
-    /* -----------------------------------------------------------------------
-     * Panel [6]: Status line — x=8, y=424, w=624, h=8
-     * --------------------------------------------------------------------- */
-    {
-        char status_buf[256];
-        snprintf(status_buf, sizeof(status_buf), "[F%d] %s",
-                 s->frame_counter, s->status);
-        ui_text(c, 8, 424, status_buf, COL_DIM);
-    }
+void ide_addr_render(IdeState *s, Canvas *c) {
+    if (!s || !c) return;
+    int x, y, w, h;
+    ide_panel_rect(PANEL_ADDR_INPUT, &x, &y, &w, &h);
+    (void)w; (void)h;
+    ui_text(c, x, y, "BP@", 0xA0FFA0FF);
+    textfield_render(c, x + 24, y, &s->addr, 0xFFD700FF, 0x081820FF);
 }
 
 /* -------------------------------------------------------------------------
@@ -685,7 +626,7 @@ int ide_shot(const char *in_path, const char *out_png, int frames) {
     for (int i = 0; i < frames; i++)
         ide_step_frame(s);
 
-    Canvas c = canvas_new(640, 432);
+    Canvas c = canvas_new(IDE_CANVAS_W, IDE_CANVAS_H);
     if (!c.px) {
         ide_free(s);
         return 1;

@@ -188,5 +188,27 @@ int main(void) {
 
     canvas_free(&pc);
 
+    /* ------------------------------------------------------------------
+     * Test 6: TextField widget
+     * ------------------------------------------------------------------ */
+    {
+        TextField t; textfield_clear(&t);
+        ASSERT_TRUE(t.len == 0);
+        textfield_putc(&t, 'C'); textfield_putc(&t, '0');
+        textfield_putc(&t, '0'); textfield_putc(&t, '0');
+        ASSERT_TRUE(t.len == 4);
+        ASSERT_TRUE(strcmp(t.text, "C000") == 0);
+        textfield_backspace(&t);
+        ASSERT_TRUE(t.len == 3);
+        ASSERT_TRUE(strcmp(t.text, "C00") == 0);
+        /* non-printable rejected */
+        textfield_putc(&t, '\n');
+        ASSERT_TRUE(t.len == 3);
+        /* capacity guard */
+        textfield_clear(&t);
+        for (int i = 0; i < 100; i++) textfield_putc(&t, 'A');
+        ASSERT_TRUE(t.len == TEXTFIELD_CAP - 1);
+    }
+
     TEST_MAIN_END();
 }

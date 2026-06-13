@@ -53,6 +53,11 @@ render path), so it can be screenshotted headlessly for CI.
 | Arrow keys | GB D-pad |
 | F5 | Hot reload: patch running code from disk, keep RAM/VRAM state (asm mode) |
 | F8 | Soft reset: re-read source and re-run from Main, clearing state (asm mode) |
+| Space | Pause / resume execution |
+| F7 | Step one instruction |
+| F6 | Step one scanline |
+| F9 | Step one frame |
+| ` (backtick) | Focus the address field — type a hex address + Enter to set a breakpoint |
 | 0-3 | Set paint colour (0=lightest, 3=darkest); top row or numpad |
 | Esc / Q | Quit |
 
@@ -63,6 +68,18 @@ render path), so it can be screenshotted headlessly for CI.
 - Click a pixel in the zoomed tile to paint it with the current colour, or
   **click and drag to brush** a stroke. Painting a tile that's in use updates
   the running screen live (via VRAM provenance).
+- Click a line in the **DISASM** panel to toggle a breakpoint there (a red gutter
+  dot appears; execution pauses when PC reaches it).
+- Click a byte cell in the **MEMORY** panel to toggle a read/write watchpoint
+  (a red underline marks watched bytes; execution pauses on access).
+
+**Debugger panels:** the IDE renders a full debugger alongside the live game —
+**DISASM** (bank-aware disassembly around PC, current line highlighted), **EXEC**
+(run/pause state, PC, break reason, breakpoint/watchpoint counts), **PALETTE**
+(BGP/OBP0/OBP1 swatches), **OAM** (40 sprite entries with previews), and **BG MAP**
+(32×32 tilemap thumbnail with the SCX/SCY viewport box). Breakpoints are
+bank-aware; watchpoints break on read and/or write to an address. Pause, edit or
+paint, then resume — debugging and live-coding compose, with state intact.
 
 The live-edit workflow: edit `game.asm` in your editor, press F5 in the IDE,
 watch the running game hot-swap with RAM/VRAM state intact. Use F8 instead when

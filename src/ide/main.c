@@ -6,7 +6,8 @@
  *       Headless: load, step `frames` frames, save PNG, exit.
  *
  *   live-gameboy-ide <file.asm|file.gb>
- *       Interactive 640x432 window with joypad, F5 reload, mouse tile paint.
+ *       Interactive 1024x720 window with joypad, F5 reload, debugger
+ *       (pause/step, breakpoints, watchpoints), mouse tile paint.
  *
  * Key bindings:
  *   Esc / Q    — quit
@@ -30,8 +31,8 @@
 #include <string.h>
 
 /* Canvas dimensions — must match ide.h convention */
-#define CANVAS_W 640
-#define CANVAS_H 432
+#define CANVAS_W IDE_CANVAS_W
+#define CANVAS_H IDE_CANVAS_H
 
 /* SDL pixel format for the streaming texture.
  * Canvas stores RGBA bytes in R,G,B,A order (row-major), which corresponds
@@ -74,8 +75,9 @@ static int run_interactive(const char *path) {
         return 1;
     }
 
-    /* Window at 2x (1280x864) with renderer logical size 640x432 — the texture
-     * is drawn at its natural size so it fills the logical viewport cleanly. */
+    /* Window at 2x with renderer logical size IDE_CANVAS_W x IDE_CANVAS_H
+     * (1024x720) — the texture is drawn at its natural size so it fills the
+     * logical viewport cleanly. */
     SDL_Window   *win = SDL_CreateWindow("live-gameboy IDE",
                                          CANVAS_W * 2, CANVAS_H * 2, 0);
     SDL_Renderer *ren = SDL_CreateRenderer(win, NULL);
@@ -131,38 +133,81 @@ static int run_interactive(const char *path) {
                 running = false;
                 break;
 
-            case SDL_EVENT_KEY_DOWN:
-                switch (ev.key.scancode) {
-                case SDL_SCANCODE_ESCAPE:
-                case SDL_SCANCODE_Q:
-                    running = false;
-                    break;
+            case SDL_EVENT_KEY_DOWN: {
+                SDL_Keycode key = ev.key.key;
+                if (ide_addr_focused(s)) {
+                    /* Address field is active: route keys to the text field. */
+                    if (key == SDLK_RETURN || key == SDLK_KP_ENTER) {
+                        ide_addr_commit(s);
+                        SDL_StopTextInput(win);
+                    } else if (key == SDLK_ESCAPE) {
+                        ide_addr_focus(s, false);
+                        SDL_StopTextInput(win);
+                    } else if (key == SDLK_BACKSPACE) {
+                        ide_addr_backspace(s);
+                    }
+                    /* Printable chars arrive via SDL_EVENT_TEXT_INPUT -> ide_addr_putc */
+                } else {
+                    switch (ev.key.scancode) {
+                    case SDL_SCANCODE_ESCAPE:
+                    case SDL_SCANCODE_Q:
+                        running = false;
+                        break;
 
-                case SDL_SCANCODE_F5:
-                    /* Hot reload: patch running code, keep state (asm mode only) */
-                    if (ide_is_asm(s))
-                        ide_reload_from_file(s, path);
-                    break;
+                    case SDL_SCANCODE_F5:
+                        /* Hot reload: patch running code, keep state (asm mode only) */
+                        if (ide_is_asm(s))
+                            ide_reload_from_file(s, path);
+                        break;
 
-                case SDL_SCANCODE_F8:
-                    /* Soft reset: re-run from Main, clearing RAM/VRAM. Picks up
-                       init-time changes that a hot reload won't (asm mode only). */
-                    if (ide_is_asm(s))
-                        ide_soft_reset_from_file(s, path);
-                    break;
+                    case SDL_SCANCODE_F8:
+                        /* Soft reset: re-run from Main, clearing RAM/VRAM. */
+                        if (ide_is_asm(s))
+                            ide_soft_reset_from_file(s, path);
+                        break;
 
-                /* Paint colour 0-3 (top row or numpad) */
-                case SDL_SCANCODE_0: case SDL_SCANCODE_KP_0:
-                    ide_set_paint_color(s, 0); break;
-                case SDL_SCANCODE_1: case SDL_SCANCODE_KP_1:
-                    ide_set_paint_color(s, 1); break;
-                case SDL_SCANCODE_2: case SDL_SCANCODE_KP_2:
-                    ide_set_paint_color(s, 2); break;
-                case SDL_SCANCODE_3: case SDL_SCANCODE_KP_3:
-                    ide_set_paint_color(s, 3); break;
+                    /* Debugger step / pause keys */
+                    case SDL_SCANCODE_SPACE:
+                        if (ide_exec_mode(s) == EXEC_PAUSED)
+                            ide_resume(s);
+                        else
+                            ide_pause(s);
+                        break;
+                    case SDL_SCANCODE_F7:
+                        ide_step_insn(s);
+                        break;
+                    case SDL_SCANCODE_F6:
+                        ide_step_line(s);
+                        break;
+                    case SDL_SCANCODE_F9:
+                        ide_step_frame_once(s);
+                        break;
+                    case SDL_SCANCODE_GRAVE:
+                        /* Backtick — open address entry field */
+                        ide_addr_focus(s, true);
+                        SDL_StartTextInput(win);
+                        break;
 
-                default: break;
+                    /* Paint colour 0-3 (top row or numpad) */
+                    case SDL_SCANCODE_0: case SDL_SCANCODE_KP_0:
+                        ide_set_paint_color(s, 0); break;
+                    case SDL_SCANCODE_1: case SDL_SCANCODE_KP_1:
+                        ide_set_paint_color(s, 1); break;
+                    case SDL_SCANCODE_2: case SDL_SCANCODE_KP_2:
+                        ide_set_paint_color(s, 2); break;
+                    case SDL_SCANCODE_3: case SDL_SCANCODE_KP_3:
+                        ide_set_paint_color(s, 3); break;
+
+                    default: break;
+                    }
                 }
+                break;
+            }
+
+            case SDL_EVENT_TEXT_INPUT:
+                /* Feed printable chars to the address field when focused. */
+                if (ide_addr_focused(s))
+                    ide_addr_putc(s, ev.text.text[0]);
                 break;
 
             case SDL_EVENT_MOUSE_BUTTON_DOWN:
@@ -170,9 +215,15 @@ static int run_interactive(const char *path) {
                     int mx = (int)ev.button.x;
                     int my = (int)ev.button.y;
 
+                    /* Try debugger panel clicks first (return false when outside). */
+                    if (ide_disasm_click(s, mx, my)) {
+                        /* breakpoint toggled in disasm panel — done */
+                    } else if (ide_memhex_click(s, mx, my)) {
+                        /* watchpoint toggled in mem-hex panel — done */
+                    }
                     /* VRAM tiles panel → select tile */
-                    if (mx >= vr_x && mx < vr_x + vr_w &&
-                        my >= vr_y && my < vr_y + vr_h) {
+                    else if (mx >= vr_x && mx < vr_x + vr_w &&
+                             my >= vr_y && my < vr_y + vr_h) {
                         ide_select_tile_at(s, mx, my);
                     }
                     /* Tile editor panel → select colour swatch / paint pixel */
@@ -207,8 +258,8 @@ static int run_interactive(const char *path) {
         const bool *ks = SDL_GetKeyboardState(&nkeys);
         gb_set_buttons(ide_gb(s), poll_buttons(ks));
 
-        /* Step emulator one frame */
-        ide_step_frame(s);
+        /* Step emulator (respects exec mode: running/paused/step) */
+        ide_run_slice(s);
 
         /* Render IDE panels into canvas */
         ide_render(s, &canvas);

@@ -56,6 +56,7 @@ roms:
 blargg: $(BUILD)/blargg
 	./$(BUILD)/blargg roms/gb-test-roms/cpu_instrs/cpu_instrs.gb
 	./$(BUILD)/blargg roms/gb-test-roms/instr_timing/instr_timing.gb
+	./$(BUILD)/blargg roms/gb-test-roms/mem_timing/mem_timing.gb
 
 sound: $(BUILD)/blargg_sound
 	./$(BUILD)/blargg_sound "roms/gb-test-roms/dmg_sound/rom_singles/01-registers.gb"

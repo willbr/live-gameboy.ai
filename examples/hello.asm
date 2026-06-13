@@ -13,6 +13,7 @@
 ;   test_e2e_serial — for a standalone ROM you would use a
 ;   SECTION "entry",ROM0 at 0x0100 and ds to skip the header.
 
+Main:
     ; --- Send 'H' ---
     ld a, $48
     ldh ($01), a    ; SB = 'H'

@@ -255,6 +255,29 @@ void ui_blit_gb(Canvas *c, const uint8_t *fb, int x, int y, int scale,
 }
 
 /* -------------------------------------------------------------------------
+ * TextField widget
+ * ------------------------------------------------------------------------- */
+
+void textfield_clear(TextField *t) { t->text[0] = '\0'; t->len = 0; t->active = false; }
+
+void textfield_putc(TextField *t, char ch) {
+    if (ch < 0x20 || ch > 0x7E) return;          /* printable ASCII only */
+    if (t->len >= TEXTFIELD_CAP - 1) return;
+    t->text[t->len++] = ch;
+    t->text[t->len] = '\0';
+}
+
+void textfield_backspace(TextField *t) {
+    if (t->len > 0) t->text[--t->len] = '\0';
+}
+
+void textfield_render(Canvas *c, int x, int y, const TextField *t,
+                      uint32_t fg, uint32_t bg) {
+    ui_text_bg(c, x, y, t->text, fg, bg);
+    if (t->active) ui_fill_rect(c, x + t->len * 8, y, 8, 8, fg);  /* caret block */
+}
+
+/* -------------------------------------------------------------------------
  * PNG save — inline RGBA (color type 6) PNG writer, zlib-compressed.
  * Technique matches src/shell/png.c / src/live/tile.c.
  * ------------------------------------------------------------------------- */

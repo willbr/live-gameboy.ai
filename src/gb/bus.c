@@ -1,4 +1,5 @@
 #include "gb.h"
+#include "debug.h"
 
 /* timer.c owns FF04-FF07 */
 uint8_t gb_timer_read(GB *gb, uint16_t addr);
@@ -64,6 +65,8 @@ static void io_write(GB *gb, uint8_t r, uint8_t v) {
 }
 
 uint8_t gb_read8(GB *gb, uint16_t a) {
+    if (gb->dbg && gb->dbg->wp_count > 0 && !gb->fetching_opcode)
+        gb_debug_check_wp(gb, a, false);
     if (a < 0x4000) {
         /* Bank 0 ROM read */
         if (!gb->fetching_opcode) {
@@ -98,6 +101,8 @@ uint8_t gb_read8(GB *gb, uint16_t a) {
 }
 
 void gb_write8(GB *gb, uint16_t a, uint8_t v) {
+    if (gb->dbg && gb->dbg->wp_count > 0)
+        gb_debug_check_wp(gb, a, true);
     /* MBC1 register writes */
     if (a < 0x8000) {
         if (gb->mbc_type >= 0x01 && gb->mbc_type <= 0x03) {   /* MBC1 */

@@ -6,7 +6,8 @@
  *       Headless: load, step `frames` frames, save PNG, exit.
  *
  *   live-gameboy-ide <file.asm|file.gb>
- *       Interactive 640x432 window with joypad, F5 reload, mouse tile paint.
+ *       Interactive 1024x720 window with joypad, F5 reload, debugger
+ *       (pause/step, breakpoints, watchpoints), mouse tile paint.
  *
  * Key bindings:
  *   Esc / Q    — quit
@@ -74,8 +75,9 @@ static int run_interactive(const char *path) {
         return 1;
     }
 
-    /* Window at 2x (1280x864) with renderer logical size 640x432 — the texture
-     * is drawn at its natural size so it fills the logical viewport cleanly. */
+    /* Window at 2x with renderer logical size IDE_CANVAS_W x IDE_CANVAS_H
+     * (1024x720) — the texture is drawn at its natural size so it fills the
+     * logical viewport cleanly. */
     SDL_Window   *win = SDL_CreateWindow("live-gameboy IDE",
                                          CANVAS_W * 2, CANVAS_H * 2, 0);
     SDL_Renderer *ren = SDL_CreateRenderer(win, NULL);

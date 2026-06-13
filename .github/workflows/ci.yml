@@ -11,3 +11,8 @@ jobs:
         run: git clone --depth 1 https://github.com/retrio/gb-test-roms roms/gb-test-roms
       - name: blargg acceptance
         run: make blargg
+      - name: dmg-acid2
+        run: |
+          mkdir -p roms
+          curl -L -o roms/dmg-acid2.gb https://github.com/mattcurrie/dmg-acid2/releases/download/v1.0/dmg-acid2.gb
+          make acid2

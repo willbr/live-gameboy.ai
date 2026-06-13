@@ -155,6 +155,130 @@ DrawFood:
 
 ; ====================== GAMEPLAY (stubs, filled in Task 5) ======================
 ReadInput:
+    ld a, $20                ; select directions
+    ldh ($00), a
+    ldh a, ($00)
+    ldh a, ($00)
+    ; bit0 Right,1 Left,2 Up,3 Down (0 = pressed)
+    bit 0, a
+    jr nz, .nr
+    xor a                    ; dir 0 = right
+    ld ($C002), a
+.nr:
+    bit 1, a
+    jr nz, .nl
+    ld a, 1
+    ld ($C002), a
+.nl:
+    bit 2, a
+    jr nz, .nu
+    ld a, 2
+    ld ($C002), a
+.nu:
+    bit 3, a
+    jr nz, .nd
+    ld a, 3
+    ld ($C002), a
+.nd:
+    ld a, $30
+    ldh ($00), a
     ret
+
 StepSnake:
+    ; 0) erase the OLD head cell first ($C000/$C001 still hold the old head).
+    ;    HeadAddr clobbers bc, so do this BEFORE computing the new head into bc.
+    call HeadAddr
+    xor a
+    ld (hl), a
+    ; 1) compute next head from dir into b (x), c (y)
+    ld a, ($C000)           ; headX
+    ld b, a
+    ld a, ($C001)           ; headY
+    ld c, a
+    ld a, ($C002)           ; dir
+    cp 0
+    jr nz, .notR
+    inc b
+    jr .applied
+.notR:
+    cp 1
+    jr nz, .notL
+    dec b
+    jr .applied
+.notL:
+    cp 2
+    jr nz, .notU
+    dec c
+    jr .applied
+.notU:
+    inc c                   ; dir 3 = down
+.applied:
+    ; 2) wrap walls: x in 0..19, y in 0..17 (underflow shows as >=200)
+    ld a, b
+    cp 20
+    jr c, .xok
+    cp 200
+    jr c, .xhi
+    ld b, 19
+    jr .xok
+.xhi:
+    ld b, 0
+.xok:
+    ld a, c
+    cp 18
+    jr c, .yok
+    cp 200
+    jr c, .yhi
+    ld c, 17
+    jr .yok
+.yhi:
+    ld c, 0
+.yok:
+    ; 4) commit new head
+    ld a, b
+    ld ($C000), a
+    ld a, c
+    ld ($C001), a
+    ; 5) eat food?
+    ld a, ($C005)
+    cp b
+    jr nz, .noFood
+    ld a, ($C006)
+    cp c
+    jr nz, .noFood
+    ld a, ($C003)
+    inc a
+    ld ($C003), a           ; grow (length byte; visible in MEMORY panel)
+    call .NewFood
+.noFood:
+    call DrawHead
+    ret
+
+; cheap pseudo-RNG -> new food cell. Uses $C007 seed.
+.NewFood:
+    ld a, ($C007)
+    add a, a
+    add a, 5
+    xor 173
+    ld ($C007), a
+    and $1F
+.modx:
+    cp 20
+    jr c, .xdone
+    sub 20
+    jr .modx
+.xdone:
+    ld ($C005), a
+    ld a, ($C007)
+    add a, 7
+    ld ($C007), a
+    and $1F
+.mody:
+    cp 18
+    jr c, .ydone
+    sub 18
+    jr .mody
+.ydone:
+    ld ($C006), a
+    call DrawFood
     ret

@@ -113,7 +113,8 @@ Game Boy ROM with a complete cartridge header (logo, checksums):
 The assembler writes a `JP Main` at the entry point `$0100` whenever the source
 defines a `Main:` global in ROM0, so `./gbasm game.asm -o game.gb` followed by
 `./live-gameboy game.gb` boots straight into your code. (The IDE/live path does
-the same patch.)
+the same patch.) A `Main:` global therefore owns the `$0100`-`$0102` entry
+vector — don't hand-write your own bytes there if you use a `Main` label.
 
 See `examples/hello.asm` for a working serial-output demo.  The `--sym` flag
 writes a `BB:AAAA Name` symbol file for use with debuggers.

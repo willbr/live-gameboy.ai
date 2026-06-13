@@ -98,8 +98,7 @@ int gb_step(GB *g) {
     exec(g, op);
 
     /* Temporary references to silence -Werror=unused-function until later tasks consume these */
-    (void)push16; (void)pop16; (void)set_flag; (void)AF; (void)set_AF;
-    (void)get_flag; (void)set_BC; (void)set_DE; (void)cond; (void)get_rp;
+    (void)get_flag; (void)cond; (void)get_rp;
 
     return (int)(g->cycles - start);
 }
@@ -139,6 +138,23 @@ static void exec(GB *g, uint8_t op) {
     case 0x01: case 0x11: case 0x21: case 0x31:
         set_rp(c, (op >> 4) & 3, fetch16(g)); break;
     case 0xC3: { uint16_t t = fetch16(g); internal(g); c->pc = t; break; }
+    case 0xC5: push16(g, BC(c)); break;
+    case 0xD5: push16(g, DE(c)); break;
+    case 0xE5: push16(g, HL(c)); break;
+    case 0xF5: push16(g, AF(c)); break;
+    case 0xC1: set_BC(c, pop16(g)); break;
+    case 0xD1: set_DE(c, pop16(g)); break;
+    case 0xE1: set_HL(c, pop16(g)); break;
+    case 0xF1: set_AF(c, pop16(g)); break;
+    case 0x08: { uint16_t a = fetch16(g);
+                 wr(g, a, (uint8_t)c->sp); wr(g, a + 1, c->sp >> 8); break; }
+    case 0xF9: internal(g); c->sp = HL(c); break;
+    case 0xF8: { int8_t e = (int8_t)fetch8(g); internal(g);
+                 uint16_t r = (uint16_t)(c->sp + e);
+                 set_flag(c, FZ, false); set_flag(c, FN, false);
+                 set_flag(c, FH, (c->sp & 0x0F) + (e & 0x0F) > 0x0F);
+                 set_flag(c, FC, (c->sp & 0xFF) + (e & 0xFF) > 0xFF);
+                 set_HL(c, r); break; }
     default:
         fprintf(stderr, "unimplemented opcode 0x%02X at PC=0x%04X\n", op, c->pc - 1);
         abort();

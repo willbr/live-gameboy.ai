@@ -84,5 +84,39 @@ int main(void) {
         ASSERT_EQ(gb_step(g), 8);
         gb_free(g);
     }
+    {   /* PUSH/POP, LD (a16),SP, LD SP,HL, LD HL,SP+e8 */
+        GB *g = gb_with((uint8_t[]){
+            0x01, 0x34, 0x12,  /* LD BC,0x1234 */
+            0xC5,              /* PUSH BC        16 cy */
+            0xD1,              /* POP DE         12 cy */
+            0x08, 0x00, 0xC2,  /* LD (0xC200),SP 20 cy */
+            0x21, 0x00, 0xD0,  /* LD HL,0xD000 */
+            0xF9,              /* LD SP,HL        8 cy */
+            0xF8, 0xFE,        /* LD HL,SP-2     12 cy: H=0 ops on low byte */
+        }, 14);
+        gb_step(g);
+        ASSERT_EQ(gb_step(g), 16);
+        ASSERT_EQ(gb_step(g), 12);
+        ASSERT_EQ(g->cpu.d, 0x12); ASSERT_EQ(g->cpu.e, 0x34);
+        uint16_t sp_before = g->cpu.sp;
+        ASSERT_EQ(gb_step(g), 20);
+        ASSERT_EQ(gb_read8(g, 0xC200), sp_before & 0xFF);
+        ASSERT_EQ(gb_read8(g, 0xC201), sp_before >> 8);
+        gb_step(g);
+        ASSERT_EQ(gb_step(g), 8); ASSERT_EQ(g->cpu.sp, 0xD000);
+        ASSERT_EQ(gb_step(g), 12);
+        ASSERT_EQ((g->cpu.h << 8) | g->cpu.l, 0xCFFE);
+        /* LD HL,SP+e8 flags: Z=0 N=0; H/C from low-byte unsigned add (00+FE: no carry) */
+        ASSERT_EQ(g->cpu.f & 0x80, 0);
+        ASSERT_EQ(g->cpu.f & 0x10, 0);
+        gb_free(g);
+    }
+    {   /* PUSH AF masks low nibble of F */
+        GB *g = gb_with((uint8_t[]){0xF5, 0xC1}, 2);   /* PUSH AF; POP BC */
+        g->cpu.a = 0x12; g->cpu.f = 0xF0;
+        gb_step(g); gb_step(g);
+        ASSERT_EQ(g->cpu.b, 0x12); ASSERT_EQ(g->cpu.c, 0xF0);
+        gb_free(g);
+    }
     TEST_MAIN_END();
 }

@@ -37,9 +37,7 @@ static AsmResult ex_assemble(const char *path) {
 static void ex_run(GB *gb, int frames, int max_steps) {
     int f = 0, s = 0;
     while (f < frames && s < max_steps) {
-        int tc = gb_step(gb);
-        gb_tick(gb, tc);
-        gb_ppu_tick(gb, tc);
+        gb_step(gb);             /* advances PPU/timer/APU internally */
         if (gb->frame_ready) { gb->frame_ready = false; f++; }
         s++;
     }
@@ -59,9 +57,7 @@ static uint8_t ex_run_watch_nr52(GB *gb, int frames, int max_steps) {
     uint8_t seen = 0;
     int f = 0, s = 0;
     while (f < frames && s < max_steps) {
-        int tc = gb_step(gb);
-        gb_tick(gb, tc);
-        gb_ppu_tick(gb, tc);
+        gb_step(gb);             /* advances PPU/timer/APU internally */
         seen |= gb_read8(gb, 0xFF26);
         if (gb->frame_ready) { gb->frame_ready = false; f++; }
         s++;

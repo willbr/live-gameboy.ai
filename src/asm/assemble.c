@@ -7,11 +7,25 @@
  *   pass 1       -> assign addresses, build symbol table
  *   pass 2       -> encode bytes, fill ROM + build database
  *
- * Section model (Task 4, single-section):
+ * Section model:
  *   ROM0  — bank 0, linear offset == cpu_addr  (0x0000..0x3FFF)
+ *   ROMX  — bank n>=1, cpu addr 0x4000-0x7FFF, linear offset = n*0x4000 + (addr-0x4000)
  *   Default (no SECTION) — ROM0 starting at 0x0150 (above header region)
  *
- * Task 5 will add multi-bank ROMX, header generation, and INCBIN/INCLUDE.
+ * Cartridge header (Task 5):
+ *   Written after assembly into the ROM image.
+ *   0x0104-0x0133: Nintendo logo (48 bytes)
+ *   0x0134-0x0143: title (ASCII, zero-padded)
+ *   0x0147: cartridge type (0x00 ROM-only, 0x01 MBC1 if any ROMX bank used)
+ *   0x0148: ROM size code (log2(rom_size / 32KB))
+ *   0x0149: RAM size (0x00)
+ *   0x014D: header checksum (x=0; for 0x0134..0x014C: x=x-byte-1; result & 0xFF)
+ *   0x014E-0x014F: global checksum (16-bit big-endian sum of all bytes except 0x014E/0x014F)
+ *
+ * Provenance sentinels (prov_line array):
+ *   >= 1   : 1-based source line number
+ *   -1     : no provenance (uninitialised or padding)
+ *   -2     : INCBIN asset byte (not from source text)
  */
 
 #include "asm.h"
@@ -33,6 +47,29 @@ static bool tok_eq_str(const AsmToken *t, const char *s);
 
 #define ROM_MIN_SIZE   0x8000u   /* 32 KiB minimum */
 #define DEFAULT_ORG    0x0150u   /* default start (above cartridge header) */
+
+/* Provenance sentinels for prov_line[] */
+#define PROV_NONE     (-1)   /* uninitialised / padding */
+#define PROV_ASSET    (-2)   /* INCBIN asset byte */
+
+/* Cartridge header layout */
+#define HDR_LOGO_ADDR  0x0104u
+#define HDR_TITLE_ADDR 0x0134u
+#define HDR_TYPE_ADDR  0x0147u
+#define HDR_ROMSIZE_ADDR 0x0148u
+#define HDR_RAMSIZE_ADDR 0x0149u
+#define HDR_HCHK_ADDR  0x014Du
+#define HDR_GCHK_ADDR  0x014Eu
+
+/* The canonical 48-byte Nintendo logo (verified against Pan Docs) */
+static const uint8_t NINTENDO_LOGO[48] = {
+    0xCE, 0xED, 0x66, 0x66, 0xCC, 0x0D, 0x00, 0x0B,
+    0x03, 0x73, 0x00, 0x83, 0x00, 0x0C, 0x00, 0x0D,
+    0x00, 0x08, 0x11, 0x1F, 0x88, 0x89, 0x00, 0x0E,
+    0xDC, 0xCC, 0x6E, 0xE6, 0xDD, 0xDD, 0xD9, 0x99,
+    0xBB, 0xBB, 0x67, 0x63, 0x6E, 0x0E, 0xEC, 0xCC,
+    0xDD, 0xDC, 0x99, 0x9F, 0xBB, 0xB9, 0x33, 0x3E
+};
 
 /* -------------------------------------------------------------------------
  * Internal diagnostic helper
@@ -581,6 +618,179 @@ static void expand_local(char *out, size_t outsz,
 }
 
 /* -------------------------------------------------------------------------
+ * INCLUDE helper: resolve a path relative to the including file's directory.
+ * Returns a heap-allocated absolute/relative path string; caller frees.
+ * ----------------------------------------------------------------------- */
+static char *resolve_include_path(const char *inc_path, const char *parent_file)
+{
+    /* If inc_path is absolute or parent_file has no directory, use as-is */
+    if (inc_path[0] == '/' || !parent_file) {
+        return strdup(inc_path);
+    }
+    const char *slash = strrchr(parent_file, '/');
+    if (!slash) {
+        return strdup(inc_path);
+    }
+    size_t dirlen = (size_t)(slash - parent_file + 1);
+    size_t inclen = strlen(inc_path);
+    char *out = malloc(dirlen + inclen + 1);
+    if (!out) return NULL;
+    memcpy(out, parent_file, dirlen);
+    memcpy(out + dirlen, inc_path, inclen);
+    out[dirlen + inclen] = '\0';
+    return out;
+}
+
+/* -------------------------------------------------------------------------
+ * INCLUDE pre-expansion context:
+ * We maintain a flat merged token array and statement array that includes
+ * both the root source and all included files.  Token indices in statements
+ * reference the merged token array.
+ *
+ * expand_includes() walks the statement list; whenever it finds a DIR_INCLUDE
+ * statement it reads the file, lexes + parses it (with token offsets adjusted
+ * to point into a new segment of the merged token array), and splices those
+ * statements in-place.
+ * ----------------------------------------------------------------------- */
+
+/*
+ * Merge an included file's tokens into the master token array, adjusting
+ * all token indices in the included statements by `tok_base`.
+ */
+static bool splice_include(
+    const char *inc_filename,
+    AsmToken  **master_toks, int *master_tok_count,
+    AsmStmt   **stmts,       int *nstmts,
+    int         insert_pos,                   /* replace statement at this index */
+    AsmResult  *r)
+{
+    /* Read the file */
+    FILE *fh = fopen(inc_filename, "rb");
+    if (!fh) {
+        char msg[400];
+        snprintf(msg, sizeof(msg), "INCLUDE: cannot open '%s'", inc_filename);
+        push_diag(r, 0, msg);
+        return false;
+    }
+    fseek(fh, 0, SEEK_END);
+    long fsz = ftell(fh);
+    rewind(fh);
+    char *inc_src = NULL;
+    if (fsz > 0) {
+        inc_src = malloc((size_t)fsz + 1);
+        if (!inc_src) { fclose(fh); push_diag(r, 0, "INCLUDE: alloc fail"); return false; }
+        if (fread(inc_src, 1, (size_t)fsz, fh) != (size_t)fsz) {
+            fclose(fh); free(inc_src);
+            push_diag(r, 0, "INCLUDE: read fail"); return false;
+        }
+        inc_src[fsz] = '\0';
+    } else {
+        inc_src = strdup("");
+    }
+    fclose(fh);
+
+    /* Lex the included file */
+    AsmDiag *ldiags = NULL; int lndiags = 0; int ltok_count = 0;
+    AsmToken *ltoks = asm_lex(inc_src, inc_filename, &ltok_count, &ldiags, &lndiags);
+    /* NOTE: do NOT free inc_src here — ltoks' .text pointers point into it.
+     * inc_src must remain alive until after asm_parse() is done, because
+     * asm_parse reads token .text to identify mnemonics, labels, etc. */
+    for (int i = 0; i < lndiags; i++) push_diag(r, ldiags[i].line, ldiags[i].msg);
+    free(ldiags);
+    if (!ltoks) { free(inc_src); push_diag(r, 0, "INCLUDE: lex fail"); return false; }
+
+    /* Parse included tokens — must happen before freeing inc_src */
+    AsmDiag *pdiags = NULL; int pndiags = 0; int inc_nstmts = 0;
+    AsmStmt *inc_stmts = asm_parse(ltoks, ltok_count, &inc_nstmts, &pdiags, &pndiags);
+    /* Now we can safely free the source buffer (all data we need is in inc_stmts char arrays) */
+    free(inc_src);
+    for (int i = 0; i < pndiags; i++) push_diag(r, pdiags[i].line, pdiags[i].msg);
+    free(pdiags);
+    if (!inc_stmts && inc_nstmts > 0) {
+        free(ltoks);
+        push_diag(r, 0, "INCLUDE: parse fail");
+        return false;
+    }
+
+    /*
+     * The included tokens (ltoks) need to be appended to the master token
+     * array.  All token-span indices in inc_stmts must be shifted by
+     * the current master_tok_count (before appending ltoks).
+     *
+     * We skip the final TOK_EOF of ltoks (the master already has one).
+     */
+    int inc_real_toks = ltok_count - 1; /* exclude TOK_EOF */
+    if (inc_real_toks < 0) inc_real_toks = 0;
+
+    int tok_base = *master_tok_count - 1; /* master TOK_EOF will be overwritten */
+
+    /* Grow master token array: replace the trailing TOK_EOF with inc tokens + new EOF */
+    int new_tok_count = *master_tok_count + inc_real_toks; /* keeps one EOF at end */
+    AsmToken *new_toks = realloc(*master_toks, (size_t)new_tok_count * sizeof(AsmToken));
+    if (!new_toks) {
+        free(ltoks); free(inc_stmts);
+        push_diag(r, 0, "INCLUDE: token merge alloc fail");
+        return false;
+    }
+    *master_toks = new_toks;
+    /* Shift old EOF to end; insert inc_real_toks tokens before it */
+    /* Overwrite the old EOF at position (master_tok_count-1) with included tokens */
+    memcpy(&new_toks[tok_base], ltoks, (size_t)inc_real_toks * sizeof(AsmToken));
+    /* Copy the included EOF token as the new master EOF */
+    new_toks[tok_base + inc_real_toks] = ltoks[ltok_count - 1]; /* TOK_EOF */
+    *master_tok_count = new_tok_count;
+    free(ltoks);
+
+    /* Adjust token indices in inc_stmts */
+    for (int i = 0; i < inc_nstmts; i++) {
+        AsmStmt *s = &inc_stmts[i];
+        if (s->kind == ST_INSTR) {
+            for (int oi = 0; oi < s->instr.nops; oi++) {
+                s->instr.ops[oi].tok_start += tok_base;
+            }
+        } else if (s->kind == ST_DIRECTIVE) {
+            s->dir.name_start  += tok_base;
+            s->dir.args_start  += tok_base;
+        }
+    }
+
+    /*
+     * Splice inc_stmts into the master statement array at insert_pos
+     * (replacing the DIR_INCLUDE statement).
+     */
+    int old_nstmts = *nstmts;
+    int new_nstmts = old_nstmts - 1 + inc_nstmts; /* remove 1 INCLUDE, add inc_nstmts */
+    AsmStmt *new_stmts;
+    if (new_nstmts <= 0) {
+        new_stmts = calloc(1, sizeof(AsmStmt));
+    } else {
+        new_stmts = malloc((size_t)new_nstmts * sizeof(AsmStmt));
+    }
+    if (!new_stmts) {
+        free(inc_stmts);
+        push_diag(r, 0, "INCLUDE: stmt splice alloc fail");
+        return false;
+    }
+
+    /* Copy: [0..insert_pos-1], [inc_stmts], [insert_pos+1..old_nstmts-1] */
+    if (insert_pos > 0)
+        memcpy(new_stmts, *stmts, (size_t)insert_pos * sizeof(AsmStmt));
+    if (inc_nstmts > 0)
+        memcpy(&new_stmts[insert_pos], inc_stmts, (size_t)inc_nstmts * sizeof(AsmStmt));
+    int tail = old_nstmts - insert_pos - 1;
+    if (tail > 0)
+        memcpy(&new_stmts[insert_pos + inc_nstmts], &(*stmts)[insert_pos + 1],
+               (size_t)tail * sizeof(AsmStmt));
+
+
+    free(*stmts);
+    *stmts   = new_stmts;
+    *nstmts  = new_nstmts;
+    free(inc_stmts);
+    return true;
+}
+
+/* -------------------------------------------------------------------------
  * Public: asm_assemble
  * ----------------------------------------------------------------------- */
 
@@ -626,6 +836,38 @@ AsmResult asm_assemble(const char *src, const char *filename)
         push_diag(&r, 0, "parse allocation failure");
         free(toks);
         return r;
+    }
+
+    /* ------------------------------------------------------------------
+     * Pre-expand INCLUDE directives (splice inline before two passes)
+     * ------------------------------------------------------------------ */
+    {
+        int i = 0;
+        while (i < nstmts) {
+            AsmStmt *s = &stmts[i];
+            if (s->kind == ST_DIRECTIVE && s->dir.kind == DIR_INCLUDE) {
+                if (s->dir.args_count < 1) { i++; continue; }
+                const AsmToken *ft = &toks[s->dir.args_start];
+                if (ft->kind != TOK_STRING) { i++; continue; }
+                char inc_rel[512];
+                size_t flen = ft->len < sizeof(inc_rel)-1 ? ft->len : sizeof(inc_rel)-1;
+                memcpy(inc_rel, ft->text, flen);
+                inc_rel[flen] = '\0';
+                char *resolved = resolve_include_path(inc_rel, filename);
+                if (!resolved) { i++; continue; }
+                int inc_count_before = nstmts;
+                bool ok = splice_include(resolved, &toks, &tok_count,
+                                         &stmts, &nstmts, i, &r);
+                free(resolved);
+                if (!ok) { i++; continue; }
+                int added = nstmts - inc_count_before + 1; /* +1 for removed INCLUDE */
+                /* Re-scan from same position (included stmts might have nested INCLUDEs) */
+                (void)added;
+                /* Don't increment i — re-examine position i which now has new stmts */
+            } else {
+                i++;
+            }
+        }
     }
 
     /* ------------------------------------------------------------------
@@ -736,9 +978,55 @@ AsmResult asm_assemble(const char *src, const char *filename)
                 break;
             }
 
-            case DIR_INCBIN:
+            case DIR_INCBIN: {
+                /*
+                 * Pass 1: measure file size so we can advance the address.
+                 * The filename is in the args token span as a TOK_STRING.
+                 */
+                if (s->dir.args_count < 1) break;
+                const AsmToken *ft = &toks[s->dir.args_start];
+                if (ft->kind != TOK_STRING) break;
+                /* Build NUL-terminated filename (relative to cwd for now) */
+                char fname[512];
+                size_t flen = ft->len < sizeof(fname)-1 ? ft->len : sizeof(fname)-1;
+                memcpy(fname, ft->text, flen);
+                fname[flen] = '\0';
+                FILE *fh = fopen(fname, "rb");
+                if (!fh) {
+                    /* Try relative to source file if filename provided */
+                    if (filename) {
+                        const char *slash = strrchr(filename, '/');
+                        if (slash) {
+                            size_t dirlen = (size_t)(slash - filename + 1);
+                            if (dirlen + flen < sizeof(fname)) {
+                                memmove(fname + dirlen, fname, flen + 1);
+                                memcpy(fname, filename, dirlen);
+                                fh = fopen(fname, "rb");
+                            }
+                        }
+                    }
+                }
+                if (!fh) {
+                    char msg[300];
+                    snprintf(msg, sizeof(msg), "INCBIN: cannot open '%.*s'",
+                             (int)ft->len, ft->text);
+                    push_diag(&r, s->line, msg);
+                    break;
+                }
+                fseek(fh, 0, SEEK_END);
+                long fsz = ftell(fh);
+                fclose(fh);
+                if (fsz > 0) section_advance(&sec, (int)fsz);
+                break;
+            }
+
             case DIR_INCLUDE:
-                /* Task 5: stubs */
+                /*
+                 * Pass 1: INCLUDE is handled by pre-expanding at assembly time.
+                 * The included statements are already spliced into the statement
+                 * array by a preprocessing step, so this stub is intentionally
+                 * empty in the pass-1 loop.  (See INCLUDE preprocessing below.)
+                 */
                 break;
             }
             break;
@@ -924,11 +1212,127 @@ AsmResult asm_assemble(const char *src, const char *filename)
                 break;
             }
 
-            case DIR_INCBIN:
+            case DIR_INCBIN: {
+                /*
+                 * Pass 2: read the file and copy bytes into ROM; mark as
+                 * PROV_ASSET (-2) in prov_line.
+                 */
+                if (s->dir.args_count < 1) break;
+                const AsmToken *ft = &toks[s->dir.args_start];
+                if (ft->kind != TOK_STRING) break;
+                char fname[512];
+                size_t flen = ft->len < sizeof(fname)-1 ? ft->len : sizeof(fname)-1;
+                memcpy(fname, ft->text, flen);
+                fname[flen] = '\0';
+                FILE *fh = fopen(fname, "rb");
+                if (!fh && filename) {
+                    const char *slash = strrchr(filename, '/');
+                    if (slash) {
+                        size_t dirlen = (size_t)(slash - filename + 1);
+                        if (dirlen + flen < sizeof(fname)) {
+                            memmove(fname + dirlen, fname, flen + 1);
+                            memcpy(fname, filename, dirlen);
+                            fh = fopen(fname, "rb");
+                        }
+                    }
+                }
+                if (!fh) {
+                    /* Error already diagnosed in pass 1 */
+                    break;
+                }
+                fseek(fh, 0, SEEK_END);
+                long fsz = ftell(fh);
+                rewind(fh);
+                if (fsz > 0 && sec.cur_off + (uint32_t)fsz <= r.rom_size) {
+                    if (fread(&r.rom[sec.cur_off], 1, (size_t)fsz, fh) == (size_t)fsz) {
+                        for (long k = 0; k < fsz; k++)
+                            r.prov_line[sec.cur_off + (uint32_t)k] = PROV_ASSET;
+                        linemap_push(&r, s->line, sec.cur_off);
+                    }
+                }
+                fclose(fh);
+                break;
+            }
+
             case DIR_INCLUDE:
+                /* INCLUDE was pre-expanded; nothing to do in pass 2 */
                 break;
             }
             break;
+        }
+    }
+
+    /* ------------------------------------------------------------------
+     * Write cartridge header (Task 5)
+     *
+     * The header bytes are written AFTER assembly so they overwrite any
+     * user code that collides (which is user error; default org=0x0150 avoids it).
+     * ------------------------------------------------------------------ */
+    if (r.rom && r.rom_size >= 0x0150u) {
+        /* 0x0104-0x0133: Nintendo logo */
+        memcpy(&r.rom[HDR_LOGO_ADDR], NINTENDO_LOGO, sizeof(NINTENDO_LOGO));
+
+        /* 0x0134-0x0143: title (16 bytes, ASCII, zero-padded)
+         * Derived from the filename (basename without extension), or all zeros. */
+        {
+            char title[16];
+            memset(title, 0, sizeof(title));
+            if (filename) {
+                const char *base = strrchr(filename, '/');
+                base = base ? base + 1 : filename;
+                int ti = 0;
+                for (int fi = 0; base[fi] && base[fi] != '.' && ti < 16; fi++, ti++) {
+                    char c = base[fi];
+                    title[ti] = (c >= 'a' && c <= 'z') ? (char)(c - 32) : c;
+                }
+            }
+            memcpy(&r.rom[HDR_TITLE_ADDR], title, 16);
+        }
+
+        /* 0x0147: cartridge type — detect if any ROMX bank was used */
+        {
+            bool has_romx = false;
+            for (int i = 0; i < st.count; i++) {
+                if (st.syms[i].bank > 0) { has_romx = true; break; }
+            }
+            /* Also check via rom_size: if > 32KB, must have multi-bank */
+            if (r.rom_size > ROM_MIN_SIZE) has_romx = true;
+            r.rom[HDR_TYPE_ADDR] = has_romx ? 0x01u : 0x00u;
+        }
+
+        /* 0x0148: ROM size code = log2(rom_size / 32KB) */
+        {
+            int code = 0;
+            size_t sz = ROM_MIN_SIZE;
+            while (sz < r.rom_size) { sz <<= 1; code++; }
+            r.rom[HDR_ROMSIZE_ADDR] = (uint8_t)code;
+        }
+
+        /* 0x0149: RAM size = 0x00 */
+        r.rom[HDR_RAMSIZE_ADDR] = 0x00u;
+
+        /* 0x014A: destination code (0x01 = non-Japanese, 0x00 = Japanese)
+         * 0x014B: old licensee code (0x33 = use new licensee at 0x0144-0x0145)
+         * 0x014C: mask ROM version (0x00)
+         * Leave these at 0 (already zeroed by calloc).
+         * 0x014D: header checksum */
+        {
+            uint8_t x = 0;
+            for (uint16_t a = HDR_TITLE_ADDR; a <= 0x014Cu; a++) {
+                x = (uint8_t)(x - r.rom[a] - 1u);
+            }
+            r.rom[HDR_HCHK_ADDR] = x;
+        }
+
+        /* 0x014E-0x014F: global checksum (16-bit big-endian, all bytes except 0x014E/0x014F) */
+        {
+            uint32_t gsum = 0;
+            for (size_t b = 0; b < r.rom_size; b++) {
+                if (b == HDR_GCHK_ADDR || b == HDR_GCHK_ADDR + 1) continue;
+                gsum += r.rom[b];
+            }
+            r.rom[HDR_GCHK_ADDR]     = (uint8_t)((gsum >> 8) & 0xFFu);
+            r.rom[HDR_GCHK_ADDR + 1] = (uint8_t)(gsum & 0xFFu);
         }
     }
 

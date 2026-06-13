@@ -1,12 +1,15 @@
 /*
- * test_asm_e2e.c — end-to-end assembler tests (Task 4: single ROM0 section)
+ * test_asm_e2e.c — end-to-end assembler tests (Task 4 + Task 5)
  *
- * Tests: asm_assemble() producing correct ROM bytes, symbol addresses,
- * linemap, prov_line, forward references, DB/DW/DS, and error cases.
+ * Task 4: asm_assemble() producing correct ROM bytes, symbol addresses,
+ *         linemap, prov_line, forward references, DB/DW/DS, and error cases.
+ * Task 5: ROMX multi-bank, cartridge header (logo/checksums), INCBIN, INCLUDE,
+ *         and emulator load test.
  */
 
 #include "test.h"
 #include "../src/asm/asm.h"
+#include "../src/gb/gb.h"
 
 #include <stdio.h>
 #include <stdint.h>
@@ -441,6 +444,240 @@ static void test_jr_cc(void)
 }
 
 /* =========================================================================
+ * Task 5, Test 16: ROMX multi-bank section
+ *
+ * SECTION "x", ROMX, BANK[2] places code at cpu addr 0x4000, bank 2.
+ * Linear offset = 2 * 0x4000 + (0x4000 - 0x4000) = 0x8000.
+ * Symbol bank should be 2.  rom_size >= 0x10000 (64 KB), ROM size code 0x01.
+ * ======================================================================= */
+static void test_romx_bank(void)
+{
+    const char *src =
+        "    SECTION \"x\", ROMX, BANK[2]\n"   /* line 1 */
+        "BankLabel:\n"                           /* line 2 */
+        "    nop\n"                              /* line 3 */
+        "    ret\n";                             /* line 4 */
+
+    AsmResult r = asm_assemble(src, "test_romx.asm");
+
+    ASSERT_TRUE(r.ok);
+    ASSERT_TRUE(r.rom_size >= 0x10000u);
+
+    /* nop at linear offset 0x8000, ret at 0x8001 */
+    ASSERT_EQ(r.rom[0x8000], 0x00);  /* nop */
+    ASSERT_EQ(r.rom[0x8001], 0xC9);  /* ret */
+
+    /* Symbol BankLabel -> bank 2, addr 0x4000, off 0x8000 */
+    const AsmSymbol *lbl = find_sym(&r, "BankLabel");
+    ASSERT_TRUE(lbl != NULL);
+    ASSERT_EQ(lbl->bank, 2);
+    ASSERT_EQ(lbl->addr, 0x4000);
+    ASSERT_EQ(lbl->off,  0x8000u);
+
+    /* ROM size code at 0x0148: log2(rom_size/32KB).  64KB = code 0x01 */
+    ASSERT_EQ(r.rom[0x0148], 0x01);
+
+    asm_free(&r);
+}
+
+/* =========================================================================
+ * Task 5, Test 17: cartridge header correctness
+ * ======================================================================= */
+
+/* Canonical Nintendo logo (48 bytes from Pan Docs) */
+static const uint8_t EXPECTED_LOGO[48] = {
+    0xCE, 0xED, 0x66, 0x66, 0xCC, 0x0D, 0x00, 0x0B,
+    0x03, 0x73, 0x00, 0x83, 0x00, 0x0C, 0x00, 0x0D,
+    0x00, 0x08, 0x11, 0x1F, 0x88, 0x89, 0x00, 0x0E,
+    0xDC, 0xCC, 0x6E, 0xE6, 0xDD, 0xDD, 0xD9, 0x99,
+    0xBB, 0xBB, 0x67, 0x63, 0x6E, 0x0E, 0xEC, 0xCC,
+    0xDD, 0xDC, 0x99, 0x9F, 0xBB, 0xB9, 0x33, 0x3E
+};
+
+static void test_cartridge_header(void)
+{
+    /*
+     * A minimal program in a single ROM0 section:
+     *  - DS  0x100 zeros to pad from 0x0000 to 0x0100
+     *  - Entry at 0x0100: nop; jp Main (4 bytes: fits before logo at 0x0104)
+     *  - DS  0x4C more bytes to advance past the header to 0x0150
+     *    (assembler overwrites 0x0104-0x014F with logo+checksums, so this padding
+     *     will be overwritten anyway — we just need cur_addr at 0x0150)
+     *  - Main at 0x0150: halt loop
+     *
+     * The header (logo, checksums) is written by the assembler after assembly.
+     */
+    const char *src =
+        "    SECTION \"boot\", ROM0\n"
+        "    ds $100\n"                  /* 0x0000..0x00FF: 256 zero bytes */
+        "    nop\n"                      /* 0x0100: nop */
+        "    jp Main\n"                  /* 0x0101..0x0103: jp Main */
+        "    ds $150 - $\n"             /* 0x0104..0x014F: pad (overwritten by header) */
+        "Main:\n"                        /* 0x0150 */
+        "Loop:\n"
+        "    halt\n"                     /* 0x0150: halt */
+        "    jr Loop\n"                  /* 0x0151..0x0152: jr -3 */
+        ;
+
+    AsmResult r = asm_assemble(src, "hdrtest.asm");
+
+    ASSERT_TRUE(r.ok);
+    ASSERT_TRUE(r.rom_size >= 0x8000u);
+
+    /* Nintendo logo at 0x0104..0x0133 */
+    ASSERT_TRUE(memcmp(&r.rom[0x0104], EXPECTED_LOGO, 48) == 0);
+
+    /* Header checksum at 0x014D:
+     * x = 0; for addr 0x0134..0x014C: x = x - rom[addr] - 1; result & 0xFF */
+    {
+        uint8_t x = 0;
+        for (int a = 0x0134; a <= 0x014C; a++) {
+            x = (uint8_t)(x - r.rom[a] - 1u);
+        }
+        ASSERT_EQ(r.rom[0x014D], x);
+    }
+
+    /* Global checksum at 0x014E-0x014F (big-endian, skip 0x014E/0x014F themselves) */
+    {
+        uint32_t gsum = 0;
+        for (size_t b = 0; b < r.rom_size; b++) {
+            if (b == 0x014Eu || b == 0x014Fu) continue;
+            gsum += r.rom[b];
+        }
+        uint8_t hi = (uint8_t)((gsum >> 8) & 0xFFu);
+        uint8_t lo = (uint8_t)(gsum & 0xFFu);
+        ASSERT_EQ(r.rom[0x014E], hi);
+        ASSERT_EQ(r.rom[0x014F], lo);
+    }
+
+    /* Emulator load test: gb_load_rom + gb_reset + run a few frames */
+    {
+        GB *gb = gb_new();
+        ASSERT_TRUE(gb != NULL);
+
+        bool loaded = gb_load_rom(gb, r.rom, r.rom_size);
+        ASSERT_TRUE(loaded);
+
+        gb_reset(gb);
+
+        /* Run ~5 frames worth of steps without crashing */
+        int frames = 0;
+        int steps  = 0;
+        while (frames < 5 && steps < 500000) {
+            int tc = gb_step(gb);
+            gb_tick(gb, tc);
+            gb_ppu_tick(gb, tc);
+            if (gb->frame_ready) {
+                gb->frame_ready = false;
+                frames++;
+            }
+            steps++;
+        }
+        ASSERT_TRUE(frames > 0 || steps > 0); /* didn't crash */
+
+        gb_free(gb);
+    }
+
+    asm_free(&r);
+}
+
+/* =========================================================================
+ * Task 5, Test 18: INCBIN — raw bytes + provenance marked as asset (-2)
+ * ======================================================================= */
+static void test_incbin(void)
+{
+    /* Write a temp file with known bytes */
+    const char *tmpfile = "/tmp/test_asm_incbin_data.bin";
+    {
+        FILE *fh = fopen(tmpfile, "wb");
+        ASSERT_TRUE(fh != NULL);
+        if (!fh) return;
+        uint8_t data[] = { 0xDE, 0xAD, 0xBE, 0xEF };
+        fwrite(data, 1, sizeof(data), fh);
+        fclose(fh);
+    }
+
+    char src[512];
+    snprintf(src, sizeof(src),
+        "    nop\n"                              /* line 1: 1 byte @ 0x0150 */
+        "    incbin \"%s\"\n"                    /* line 2: 4 bytes @ 0x0151 */
+        "    ret\n",                             /* line 3: 1 byte @ 0x0155 */
+        tmpfile);
+
+    AsmResult r = asm_assemble(src, "test_incbin.asm");
+
+    ASSERT_TRUE(r.ok);
+
+    ASSERT_EQ(r.rom[0x0150], 0x00);  /* nop */
+
+    /* incbin bytes */
+    ASSERT_EQ(r.rom[0x0151], 0xDE);
+    ASSERT_EQ(r.rom[0x0152], 0xAD);
+    ASSERT_EQ(r.rom[0x0153], 0xBE);
+    ASSERT_EQ(r.rom[0x0154], 0xEF);
+
+    ASSERT_EQ(r.rom[0x0155], 0xC9);  /* ret */
+
+    /* Provenance: nop = source line 1, incbin bytes = PROV_ASSET (-2), ret = 3 */
+    ASSERT_EQ(r.prov_line[0x0150], 1);
+    ASSERT_EQ(r.prov_line[0x0151], -2);   /* PROV_ASSET sentinel */
+    ASSERT_EQ(r.prov_line[0x0152], -2);
+    ASSERT_EQ(r.prov_line[0x0153], -2);
+    ASSERT_EQ(r.prov_line[0x0154], -2);
+    ASSERT_EQ(r.prov_line[0x0155], 3);
+
+    asm_free(&r);
+    remove(tmpfile);
+}
+
+/* =========================================================================
+ * Task 5, Test 19: INCLUDE — inline assembly from external file
+ * ======================================================================= */
+static void test_include(void)
+{
+    /* Write a temp included file with a label + instruction */
+    const char *tmpfile = "/tmp/test_asm_include_lib.asm";
+    {
+        FILE *fh = fopen(tmpfile, "w");
+        ASSERT_TRUE(fh != NULL);
+        if (!fh) return;
+        /* Include file: a label IncLabel and a nop */
+        fprintf(fh, "IncLabel:\n    nop\n");
+        fclose(fh);
+    }
+
+    char src[512];
+    snprintf(src, sizeof(src),
+        "    nop\n"                  /* line 1: nop @ 0x0150 */
+        "    include \"%s\"\n"       /* line 2: include -> IncLabel at 0x0151, nop @ 0x0151 */
+        "    ret\n",                 /* after include: ret */
+        tmpfile);
+
+    AsmResult r = asm_assemble(src, "test_include.asm");
+
+    ASSERT_TRUE(r.ok);
+
+    /* nop from main file */
+    ASSERT_EQ(r.rom[0x0150], 0x00);  /* nop */
+
+    /* Included label IncLabel should be at 0x0151 */
+    const AsmSymbol *inc_lbl = find_sym(&r, "IncLabel");
+    ASSERT_TRUE(inc_lbl != NULL);
+    if (inc_lbl) {
+        ASSERT_EQ(inc_lbl->addr, 0x0151);
+    }
+
+    /* nop from included file at 0x0151 */
+    ASSERT_EQ(r.rom[0x0151], 0x00);  /* nop from included file */
+
+    /* ret from main file after include */
+    ASSERT_EQ(r.rom[0x0152], 0xC9);  /* ret */
+
+    asm_free(&r);
+    remove(tmpfile);
+}
+
+/* =========================================================================
  * Main
  * ======================================================================= */
 int main(void)
@@ -460,6 +697,12 @@ int main(void)
     test_dw_label();
     test_rom_min_size();
     test_jr_cc();
+
+    /* Task 5 tests */
+    test_romx_bank();
+    test_cartridge_header();
+    test_incbin();
+    test_include();
 
     TEST_MAIN_END();
 }

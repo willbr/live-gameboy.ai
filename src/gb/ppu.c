@@ -18,7 +18,7 @@ void gb_ppu_reset(GB *g) {
     g->wy = 0; g->wx = 0;
     g->ppu_mode = MODE_OAM; g->ppu_dot = 0; g->stat_line = false;
     g->win_line = 0; g->frame_ready = false;
-    g->fx = 0; g->fetch_step = 0; g->fetch_x = 0; g->bg_fifo_n = 0;
+    g->fx = 0; g->discard = 0; g->fetch_step = 0; g->fetch_x = 0; g->bg_fifo_n = 0;
     g->window_active = false; g->oam_dma_src = 0;
     memset(g->framebuffer, 0, sizeof g->framebuffer);
 }
@@ -144,9 +144,71 @@ bool gb_ppu_oam_blocked(const GB *g) {
 
 const uint8_t *gb_framebuffer(const GB *g) { return g->framebuffer; }
 
-/* ---- rendering stubs (replaced in Tasks 4-6) ---- */
-static void render_begin_line(GB *g) { g->fx = 0; }
-static void render_step(GB *g) { g->fx++; }   /* advance so mode 3 terminates */
+/* ---- BG pixel FIFO rendering (Task 4) ---- */
+
+/* apply a 2-bit palette: color index -> shade */
+static uint8_t pal_shade(uint8_t pal, uint8_t color) {
+    return (uint8_t)((pal >> (color * 2)) & 0x03);
+}
+
+/* read a BG/window tile row's two bytes for tile column `tx`, pixel row `py` */
+static void fetch_bg_row(GB *g, int map_base, int tx, int ty, int py,
+                         uint8_t *lo, uint8_t *hi) {
+    int map_off = map_base + (ty & 31) * 32 + (tx & 31);
+    uint8_t tile = g->vram[map_off];
+    int addr;
+    if (g->lcdc & 0x10) addr = tile * 16;                 /* 0x8000 unsigned */
+    else                addr = 0x1000 + (int8_t)tile * 16; /* 0x9000 signed */
+    *lo = g->vram[addr + py * 2];
+    *hi = g->vram[addr + py * 2 + 1];
+}
+
+static void render_begin_line(GB *g) {
+    g->fx = 0;
+    g->bg_fifo_n = 0;
+    g->fetch_step = 0;
+    g->fetch_x = 0;
+    g->window_active = false;
+    g->discard = g->scx & 7;          /* fine-scroll discard counter */
+}
+
+/* push 8 BG pixels for the next tile column into the fifo */
+static void bg_fetch_tile(GB *g) {
+    int map_base = (g->lcdc & 0x08) ? 0x1C00 : 0x1800;    /* 9C00 / 9800 */
+    int ty = ((g->scy + g->ly) / 8);
+    int py = (g->scy + g->ly) % 8;
+    int tx = (g->scx / 8) + g->fetch_x;
+    uint8_t lo, hi;
+    fetch_bg_row(g, map_base, tx, ty, py, &lo, &hi);
+    for (int b = 7; b >= 0; b--) {
+        uint8_t color = (uint8_t)(((hi >> b) & 1) << 1 | ((lo >> b) & 1));
+        g->bg_fifo_c[g->bg_fifo_n++] = color;
+    }
+    g->fetch_x++;
+}
+
+static void render_step(GB *g) {
+    if (g->fx >= 160) return;
+
+    /* ensure the fifo has pixels; the BG fetcher pushes 8 at a time */
+    if (g->bg_fifo_n == 0) bg_fetch_tile(g);
+
+    /* discard SCX&7 pixels at the very start of the line */
+    while (g->discard > 0 && g->bg_fifo_n > 0) {
+        memmove(g->bg_fifo_c, g->bg_fifo_c + 1, (size_t)(--g->bg_fifo_n));
+        g->discard--;
+        if (g->bg_fifo_n == 0) bg_fetch_tile(g);
+    }
+    if (g->bg_fifo_n == 0) return;
+
+    uint8_t color = g->bg_fifo_c[0];
+    memmove(g->bg_fifo_c, g->bg_fifo_c + 1, (size_t)(--g->bg_fifo_n));
+
+    if (!(g->lcdc & 0x01)) color = 0;     /* BG/window disabled -> color 0 */
+    uint8_t shade = pal_shade(g->bgp, color);
+    g->framebuffer[g->ly * 160 + g->fx] = shade;
+    g->fx++;
+}
 
 /* ---- OAM DMA (Task 3) ---- */
 static void oam_dma(GB *g, uint8_t hi) {

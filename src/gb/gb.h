@@ -37,6 +37,7 @@ typedef struct GB {
     bool     frame_ready;     /* set true when a full frame finishes (line 144 reached) */
     /* mode-3 fifo working state (declared here so the whole struct stays serializable) */
     int      fx;              /* current screen X being produced (0..159) in mode 3 */
+    int      discard;         /* SCX fine-scroll pixels to discard at start of line */
     int      fetch_step;      /* bg fetcher step 0..7 */
     int      fetch_x;         /* bg fetcher tile-column counter for this line */
     uint8_t  bg_fifo_c[8];    /* bg fifo colors */

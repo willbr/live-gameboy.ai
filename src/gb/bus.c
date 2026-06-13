@@ -64,12 +64,27 @@ static void io_write(GB *gb, uint8_t r, uint8_t v) {
 }
 
 uint8_t gb_read8(GB *gb, uint16_t a) {
-    if (a < 0x4000)  return gb->rom[a];
+    if (a < 0x4000) {
+        /* Bank 0 ROM read */
+        if (!gb->fetching_opcode) {
+            gb->prov_pending = (uint32_t)a;
+            gb->prov_pending_valid = true;
+        }
+        return gb->rom[a];
+    }
     if (a < 0x8000) {
         /* Banked ROM: rom_bank selects the 0x4000-0x7FFF window (MBC1 read-banking) */
         uint32_t off = (uint32_t)gb->rom_bank * 0x4000u + (a - 0x4000u);
+        if (!gb->fetching_opcode) {
+            gb->prov_pending = off;
+            gb->prov_pending_valid = true;
+        }
         if (off < gb->rom_size) return gb->rom[off];
         return 0xFF;
+    }
+    /* Non-ROM region: clear the pending taint if this is not an opcode fetch */
+    if (!gb->fetching_opcode) {
+        gb->prov_pending_valid = false;
     }
     if (a < 0xA000)  return gb_ppu_vram_blocked(gb) ? 0xFF : gb->vram[a - 0x8000];
     if (a < 0xC000)  return gb->cart_ram[a - 0xA000];   /* cart RAM (8KB) */
@@ -98,7 +113,17 @@ void gb_write8(GB *gb, uint16_t a, uint8_t v) {
         }
         return;
     }
-    if (a < 0xA000)  { if (!gb_ppu_vram_blocked(gb)) gb->vram[a - 0x8000] = v; return; }
+    if (a < 0xA000)  {
+        if (!gb_ppu_vram_blocked(gb)) {
+            gb->vram[a - 0x8000] = v;
+            /* Stamp VRAM provenance: record the source ROM offset if taint is valid */
+            if (gb->prov_pending_valid)
+                gb->vram_prov[a - 0x8000] = gb->prov_pending;
+            else
+                gb->vram_prov[a - 0x8000] = 0xFFFFFFFF;
+        }
+        return;
+    }
     if (a < 0xC000)  { gb->cart_ram[a - 0xA000] = v; return; }  /* cart RAM (8KB) */
     if (a < 0xE000)  { gb->wram[a - 0xC000] = v; return; }
     if (a < 0xFE00)  { gb->wram[a - 0xE000] = v; return; }

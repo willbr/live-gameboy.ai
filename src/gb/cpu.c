@@ -127,7 +127,9 @@ static void exec(GB *g, uint8_t op);
 
 static void exec_cb(GB *g) {
     CPU *c = &g->cpu;
+    g->fetching_opcode = true;
     uint8_t op = fetch8(g);
+    g->fetching_opcode = false;
     int x = op >> 6, y = (op >> 3) & 7, z = op & 7;
     uint8_t v = get_r(g, z);
 
@@ -198,7 +200,9 @@ int gb_step(GB *g) {
 
     if (c->halted) { gb_tick(g, 4); return (int)(g->cycles - start); }
 
+    g->fetching_opcode = true;
     uint8_t op = fetch8(g);
+    g->fetching_opcode = false;
     if (c->halt_bug) { c->pc--; c->halt_bug = false; }
     exec(g, op);
 

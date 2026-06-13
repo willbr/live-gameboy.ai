@@ -2,6 +2,14 @@
 #include <stdlib.h>
 #include <string.h>
 
+void gb_vram_prov_reset(GB *gb) {
+    for (int i = 0; i < 0x2000; i++)
+        gb->vram_prov[i] = 0xFFFFFFFF;
+    gb->prov_pending = 0;
+    gb->prov_pending_valid = false;
+    gb->fetching_opcode = false;
+}
+
 GB *gb_new(void) {
     GB *g = calloc(1, sizeof(GB));
     return g;
@@ -48,6 +56,7 @@ void gb_reset(GB *gb) {
     gb_ppu_reset(gb);
     gb_joypad_reset(gb);
     gb_apu_reset(gb);
+    gb_vram_prov_reset(gb);
 }
 
 void gb_tick(GB *gb, int tcycles) {

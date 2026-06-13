@@ -33,7 +33,13 @@ blargg: $(BUILD)/blargg
 	./$(BUILD)/blargg roms/gb-test-roms/cpu_instrs/cpu_instrs.gb
 	./$(BUILD)/blargg roms/gb-test-roms/instr_timing/instr_timing.gb
 
+$(BUILD)/dmg_acid2: tests/dmg_acid2.c $(GB_OBJ) | $(BUILD)
+	$(CC) $(CFLAGS) $< $(GB_OBJ) -o $@
+
+acid2: $(BUILD)/dmg_acid2
+	./$(BUILD)/dmg_acid2 roms/dmg-acid2.gb
+
 clean:
 	rm -rf $(BUILD)
 
-.PHONY: all test blargg roms clean
+.PHONY: all test blargg roms clean acid2

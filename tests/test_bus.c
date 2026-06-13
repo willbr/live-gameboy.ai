@@ -26,7 +26,8 @@ int main(void) {
     gb_write8(g, 0xE200, 0x66);
     ASSERT_EQ(gb_read8(g, 0xC200), 0x66);
 
-    /* VRAM, OAM, HRAM */
+    /* VRAM, OAM, HRAM — turn LCD off so PPU blocking does not interfere */
+    g->lcdc = 0x00;
     gb_write8(g, 0x8000, 0x11); ASSERT_EQ(gb_read8(g, 0x8000), 0x11);
     gb_write8(g, 0xFE00, 0x22); ASSERT_EQ(gb_read8(g, 0xFE00), 0x22);
     gb_write8(g, 0xFF80, 0x33); ASSERT_EQ(gb_read8(g, 0xFF80), 0x33);

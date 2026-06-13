@@ -9,7 +9,9 @@ static uint8_t io_read(GB *gb, uint8_t r) {
     case 0x04: case 0x05: case 0x06: case 0x07:
         return gb_timer_read(gb, 0xFF00 | r);
     case 0x0F: return gb->iflag | 0xE0;
-    case 0x44: return 0x90;  /* TODO(milestone-2): real PPU LY. Stub reports VBlank so ROMs progress */
+    case 0x40: case 0x41: case 0x42: case 0x43: case 0x44: case 0x45:
+    case 0x46: case 0x47: case 0x48: case 0x49: case 0x4A: case 0x4B:
+        return gb_ppu_read(gb, 0xFF00 | r);
     default:   return gb->io[r];
     }
 }
@@ -30,6 +32,9 @@ static void io_write(GB *gb, uint8_t r, uint8_t v) {
         gb_timer_write(gb, 0xFF00 | r, v);
         break;
     case 0x0F: gb->iflag = v & 0x1F; break;
+    case 0x40: case 0x41: case 0x42: case 0x43: case 0x44: case 0x45:
+    case 0x46: case 0x47: case 0x48: case 0x49: case 0x4A: case 0x4B:
+        gb_ppu_write(gb, 0xFF00 | r, v); break;
     default:   gb->io[r] = v; break;
     }
 }
@@ -42,11 +47,11 @@ uint8_t gb_read8(GB *gb, uint16_t a) {
         if (off < gb->rom_size) return gb->rom[off];
         return 0xFF;
     }
-    if (a < 0xA000)  return gb->vram[a - 0x8000];
+    if (a < 0xA000)  return gb_ppu_vram_blocked(gb) ? 0xFF : gb->vram[a - 0x8000];
     if (a < 0xC000)  return 0xFF;                       /* cart RAM: none yet */
     if (a < 0xE000)  return gb->wram[a - 0xC000];
     if (a < 0xFE00)  return gb->wram[a - 0xE000];       /* echo */
-    if (a < 0xFEA0)  return gb->oam[a - 0xFE00];
+    if (a < 0xFEA0)  return gb_ppu_oam_blocked(gb) ? 0xFF : gb->oam[a - 0xFE00];
     if (a < 0xFF00)  return 0xFF;                       /* unusable */
     if (a < 0xFF80)  return io_read(gb, a & 0x7F);
     if (a < 0xFFFF)  return gb->hram[a - 0xFF80];
@@ -69,11 +74,11 @@ void gb_write8(GB *gb, uint16_t a, uint8_t v) {
         }
         return;
     }
-    if (a < 0xA000)  { gb->vram[a - 0x8000] = v; return; }
+    if (a < 0xA000)  { if (!gb_ppu_vram_blocked(gb)) gb->vram[a - 0x8000] = v; return; }
     if (a < 0xC000)  return;
     if (a < 0xE000)  { gb->wram[a - 0xC000] = v; return; }
     if (a < 0xFE00)  { gb->wram[a - 0xE000] = v; return; }
-    if (a < 0xFEA0)  { gb->oam[a - 0xFE00] = v; return; }
+    if (a < 0xFEA0)  { if (!gb_ppu_oam_blocked(gb)) gb->oam[a - 0xFE00] = v; return; }
     if (a < 0xFF00)  return;
     if (a < 0xFF80)  { io_write(gb, a & 0x7F, v); return; }
     if (a < 0xFFFF)  { gb->hram[a - 0xFF80] = v; return; }

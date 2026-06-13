@@ -157,31 +157,35 @@ DrawFood:
 ReadInput:
     ld a, $20                ; select directions
     ldh ($00), a
+    ldh a, ($00)            ; settle
     ldh a, ($00)
-    ldh a, ($00)
+    ld b, a                 ; preserve joypad read (handlers clobber a)
+    ld a, $30
+    ldh ($00), a            ; deselect
     ; bit0 Right,1 Left,2 Up,3 Down (0 = pressed)
-    bit 0, a
+    bit 0, b
     jr nz, .nr
     xor a                    ; dir 0 = right
     ld ($C002), a
+    ret
 .nr:
-    bit 1, a
+    bit 1, b
     jr nz, .nl
     ld a, 1
     ld ($C002), a
+    ret
 .nl:
-    bit 2, a
+    bit 2, b
     jr nz, .nu
     ld a, 2
     ld ($C002), a
+    ret
 .nu:
-    bit 3, a
+    bit 3, b
     jr nz, .nd
     ld a, 3
     ld ($C002), a
 .nd:
-    ld a, $30
-    ldh ($00), a
     ret
 
 StepSnake:

@@ -206,9 +206,70 @@ PatchReport live_reload(LiveSession *s, const char *new_src)
 
         /* Check if address changed (relocation) */
         if (np->addr != op->addr || np->bank != op->bank) {
-            /* RELOCATED: Task 4 will implement trampoline; log it for now */
-            report_add(&rpt, np->name, PATCH_RELOCATED,
-                       "function outgrew slot and was relocated");
+            /* Task 4: Trampoline relocation for outgrown functions */
+
+            /* Constraint: new address must be in the same bank as old (or bank 0).
+             * If cross-bank, refuse — Task 5 will add global soft-reload fallback. */
+            if (np->bank != op->bank && op->bank != 0) {
+                char reason[120];
+                snprintf(reason, sizeof reason,
+                         "cross-bank relocation: old bank %d, new bank %d",
+                         op->bank, np->bank);
+                report_add(&rpt, np->name, PATCH_REFUSED, reason);
+                continue;
+            }
+
+            /* Bounds check: new slot must fit in both live rom and new rom */
+            uint32_t new_off = linear_off(np->bank, np->addr);
+            uint32_t old_off = linear_off(op->bank, op->addr);
+            if (new_off + (uint32_t)np->slot_size > (uint32_t)s->gb->rom_size ||
+                new_off + (uint32_t)np->slot_size > (uint32_t)nr.rom_size) {
+                report_add(&rpt, np->name, PATCH_REFUSED,
+                           "relocated slot out of bounds");
+                continue;
+            }
+
+            /* Safe point: step CPU until PC is outside BOTH old and new ranges */
+            /* Step until outside old range */
+            step_to_safe(s->gb, op->bank, op->addr, op->slot_size, 200000);
+            /* Also step until outside new range (in case PC landed in new area) */
+            step_to_safe(s->gb, np->bank, np->addr, np->slot_size, 200000);
+
+            /* 1. Copy the new function bytes into gb->rom at the NEW linear offset */
+            memcpy(s->gb->rom + new_off, nr.rom + new_off,
+                   (size_t)np->slot_size);
+
+            /* 2. Write JP newaddr trampoline at the OLD entry address.
+             *    Only overwrite the first 3 bytes; leave the rest of the old
+             *    slot (zombie body) unchanged so in-flight returns stay valid. */
+            if (old_off + 3 <= (uint32_t)s->gb->rom_size) {
+                uint16_t new_cpu_addr = np->addr;
+                s->gb->rom[old_off + 0] = 0xC3;                        /* JP nn */
+                s->gb->rom[old_off + 1] = (uint8_t)(new_cpu_addr & 0xFF);
+                s->gb->rom[old_off + 2] = (uint8_t)((new_cpu_addr >> 8) & 0xFF);
+            }
+
+            /* 3. Rebind static call sites: for each AsmRefSite in the new build
+             *    that references this function, update gb->rom at ref.off to the
+             *    new address (respecting addend). */
+            for (int r = 0; r < nr.nrefs; r++) {
+                const AsmRefSite *ref = &nr.refs[r];
+                if (strcmp(ref->sym, np->name) != 0) continue;
+                /* Compute the address to write: (new_addr + addend) & 0xFFFF */
+                uint16_t bound_addr = (uint16_t)((np->addr + ref->addend) & 0xFFFF);
+                uint32_t roff = ref->off;
+                if (roff + 2 <= (uint32_t)s->gb->rom_size) {
+                    s->gb->rom[roff + 0] = (uint8_t)(bound_addr & 0xFF);
+                    s->gb->rom[roff + 1] = (uint8_t)((bound_addr >> 8) & 0xFF);
+                }
+            }
+
+            /* Report as RELOCATED with old->new address info */
+            char reason[120];
+            snprintf(reason, sizeof reason,
+                     "relocated $%04X -> $%04X (bank %d -> %d)",
+                     op->addr, np->addr, op->bank, np->bank);
+            report_add(&rpt, np->name, PATCH_RELOCATED, reason);
             continue;
         }
 

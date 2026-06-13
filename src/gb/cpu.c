@@ -80,6 +80,8 @@ static bool cond(const CPU *c, int i) {
 
 static void exec(GB *g, uint8_t op);
 
+static void halt(GB *g) { g->cpu.halted = true; }
+
 int gb_step(GB *g) {
     uint64_t start = g->cycles;
     CPU *c = &g->cpu;
@@ -96,21 +98,47 @@ int gb_step(GB *g) {
     exec(g, op);
 
     /* Temporary references to silence -Werror=unused-function until later tasks consume these */
-    (void)get_r; (void)set_r; (void)get_rp; (void)set_rp; (void)cond;
     (void)push16; (void)pop16; (void)set_flag; (void)AF; (void)set_AF;
-    (void)get_flag; (void)BC; (void)DE; (void)HL;
-    (void)set_BC; (void)set_DE; (void)set_HL;
-    (void)rd; (void)wr;
+    (void)get_flag; (void)set_BC; (void)set_DE; (void)cond; (void)get_rp;
 
     return (int)(g->cycles - start);
 }
 
 static void exec(GB *g, uint8_t op) {
     CPU *c = &g->cpu;
+    int x = op >> 6, y = (op >> 3) & 7, z = op & 7;
+
+    if (x == 1) {                       /* 0x40-0x7F: LD r,r' (0x76 = HALT, Task 8) */
+        if (op == 0x76) { halt(g); return; }
+        set_r(g, y, get_r(g, z));
+        return;
+    }
+    if (x == 0 && z == 6) {             /* LD r,d8 / LD (HL),d8 */
+        set_r(g, y, fetch8(g));
+        return;
+    }
+
     switch (op) {
-    case 0x00: break;                                     /* NOP */
-    case 0x3E: c->a = fetch8(g); break;                   /* LD A,d8 (general form: Task 4) */
-    case 0xC3: { uint16_t t = fetch16(g); internal(g); c->pc = t; break; } /* JP a16 */
+    case 0x00: break;
+    /* indirect A loads */
+    case 0x02: wr(g, BC(c), c->a); break;
+    case 0x12: wr(g, DE(c), c->a); break;
+    case 0x0A: c->a = rd(g, BC(c)); break;
+    case 0x1A: c->a = rd(g, DE(c)); break;
+    case 0x22: wr(g, HL(c), c->a); set_HL(c, HL(c) + 1); break;
+    case 0x2A: c->a = rd(g, HL(c)); set_HL(c, HL(c) + 1); break;
+    case 0x32: wr(g, HL(c), c->a); set_HL(c, HL(c) - 1); break;
+    case 0x3A: c->a = rd(g, HL(c)); set_HL(c, HL(c) - 1); break;
+    case 0xE0: wr(g, 0xFF00 | fetch8(g), c->a); break;
+    case 0xF0: c->a = rd(g, 0xFF00 | fetch8(g)); break;
+    case 0xE2: wr(g, 0xFF00 | c->c, c->a); break;
+    case 0xF2: c->a = rd(g, 0xFF00 | c->c); break;
+    case 0xEA: wr(g, fetch16(g), c->a); break;
+    case 0xFA: c->a = rd(g, fetch16(g)); break;
+    /* needed by the test: LD rr,d16 (full family in Task 5) */
+    case 0x01: case 0x11: case 0x21: case 0x31:
+        set_rp(c, (op >> 4) & 3, fetch16(g)); break;
+    case 0xC3: { uint16_t t = fetch16(g); internal(g); c->pc = t; break; }
     default:
         fprintf(stderr, "unimplemented opcode 0x%02X at PC=0x%04X\n", op, c->pc - 1);
         abort();

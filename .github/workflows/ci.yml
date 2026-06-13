@@ -16,3 +16,12 @@ jobs:
           mkdir -p roms
           curl -L -o roms/dmg-acid2.gb https://github.com/mattcurrie/dmg-acid2/releases/download/v1.0/dmg-acid2.gb
           make acid2
+      - name: install SDL3
+        run: sudo apt-get update && sudo apt-get install -y libsdl3-dev zlib1g-dev || echo "SDL3 apt package unavailable; skipping shell build"
+      - name: build shell + headless screenshot
+        run: |
+          if pkg-config --exists sdl3; then
+            make live-gameboy && make shell-shot
+          else
+            echo "SDL3 not available on runner; skipping shell build"
+          fi

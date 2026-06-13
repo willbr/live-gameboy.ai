@@ -8,7 +8,7 @@ Design: docs/superpowers/specs/2026-06-12-live-gameboy-design.md
 ## Status
 
 - [x] Milestone 1: headless libgb core — passes blargg cpu_instrs, instr_timing
-- [~] Milestone 2: SDL3 shell, pixel-FIFO PPU, APU — PPU done (headless, passes dmg-acid2); shell + APU pending
+- [~] Milestone 2: SDL3 shell, pixel-FIFO PPU, APU — PPU + shell done; APU pending
 - [ ] Milestone 3: built-in assembler
 - [ ] Milestone 4: live patching
 - [ ] Milestone 5: live tile editing
@@ -19,3 +19,11 @@ Design: docs/superpowers/specs/2026-06-12-live-gameboy-design.md
     make test     # unit tests
     make roms     # fetch test ROMs (or clone retrio/gb-test-roms into roms/)
     make blargg   # acceptance tests
+
+## Run
+
+    make live-gameboy            # build the SDL app (needs SDL3 via pkg-config)
+    ./live-gameboy game.gb [scale]
+    ./live-gameboy --shot game.gb out.png [frames] [scale]   # headless screenshot
+
+Keys: Z=A, X=B, Enter=Start, RShift=Select, Arrows=D-pad, Esc=quit.

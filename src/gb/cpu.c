@@ -125,7 +125,47 @@ static uint8_t dec8(CPU *c, uint8_t v) {
 
 static void exec(GB *g, uint8_t op);
 
-static void halt(GB *g) { g->cpu.halted = true; }
+static void exec_cb(GB *g) {
+    CPU *c = &g->cpu;
+    uint8_t op = fetch8(g);
+    int x = op >> 6, y = (op >> 3) & 7, z = op & 7;
+    uint8_t v = get_r(g, z);
+
+    if (x == 1) {                                   /* BIT y,r — read only */
+        set_flag(c, FZ, !(v & (1 << y)));
+        set_flag(c, FN, false); set_flag(c, FH, true);
+        return;
+    }
+    if (x == 2) { set_r(g, z, v & ~(1 << y)); return; }   /* RES */
+    if (x == 3) { set_r(g, z, v | (1 << y)); return; }    /* SET */
+
+    /* x == 0: rotate/shift family, y selects op */
+    bool carry = get_flag(c, FC);
+    uint8_t r = 0; bool nc = false;
+    switch (y) {
+    case 0: nc = v >> 7; r = (uint8_t)(v << 1 | v >> 7); break;        /* RLC */
+    case 1: nc = v & 1;  r = (uint8_t)(v >> 1 | v << 7); break;        /* RRC */
+    case 2: nc = v >> 7; r = (uint8_t)(v << 1 | (carry ? 1 : 0)); break; /* RL */
+    case 3: nc = v & 1;  r = (uint8_t)(v >> 1 | (carry ? 0x80 : 0)); break; /* RR */
+    case 4: nc = v >> 7; r = (uint8_t)(v << 1); break;                 /* SLA */
+    case 5: nc = v & 1;  r = (uint8_t)((v >> 1) | (v & 0x80)); break;  /* SRA */
+    case 6: nc = false;  r = (uint8_t)(v << 4 | v >> 4); break;        /* SWAP */
+    case 7: nc = v & 1;  r = (uint8_t)(v >> 1); break;                 /* SRL */
+    }
+    c->f = 0;
+    set_flag(c, FZ, r == 0);
+    set_flag(c, FC, nc);
+    set_r(g, z, r);
+}
+
+static void halt(GB *g) {
+    CPU *c = &g->cpu;
+    uint8_t pending = g->ie & g->iflag & 0x1F;
+    if (!c->ime && pending)
+        c->halt_bug = true;       /* HALT bug: next opcode byte read twice */
+    else
+        c->halted = true;
+}
 
 int gb_step(GB *g) {
     uint64_t start = g->cycles;
@@ -133,14 +173,14 @@ int gb_step(GB *g) {
 
     /* interrupt dispatch lives here from Task 9 on */
 
-    if (c->ime_pending && --c->ime_pending == 0)
-        c->ime = true;
-
     if (c->halted) { gb_tick(g, 4); return (int)(g->cycles - start); }
 
     uint8_t op = fetch8(g);
     if (c->halt_bug) { c->pc--; c->halt_bug = false; }
     exec(g, op);
+
+    if (c->ime_pending && --c->ime_pending == 0)
+        c->ime = true;
 
     /* Temporary references to silence -Werror=unused-function until later tasks consume these */
     (void)cond;
@@ -203,6 +243,36 @@ static void exec(GB *g, uint8_t op) {
     case 0x01: case 0x11: case 0x21: case 0x31:
         set_rp(c, (op >> 4) & 3, fetch16(g)); break;
     case 0x37: set_flag(c, FN, false); set_flag(c, FH, false); set_flag(c, FC, true); break;
+    case 0xCB: exec_cb(g); break;
+    case 0x07: { bool b = c->a >> 7; c->a = (uint8_t)(c->a << 1 | b);
+                 c->f = 0; set_flag(c, FC, b); break; }                  /* RLCA */
+    case 0x0F: { bool b = c->a & 1; c->a = (uint8_t)(c->a >> 1 | b << 7);
+                 c->f = 0; set_flag(c, FC, b); break; }                  /* RRCA */
+    case 0x17: { bool b = c->a >> 7;
+                 c->a = (uint8_t)(c->a << 1 | (get_flag(c, FC) ? 1 : 0));
+                 c->f = 0; set_flag(c, FC, b); break; }                  /* RLA */
+    case 0x1F: { bool b = c->a & 1;
+                 c->a = (uint8_t)(c->a >> 1 | (get_flag(c, FC) ? 0x80 : 0));
+                 c->f = 0; set_flag(c, FC, b); break; }                  /* RRA */
+    case 0x27: {                                                          /* DAA */
+        uint8_t a = c->a;
+        if (!get_flag(c, FN)) {
+            if (get_flag(c, FC) || a > 0x99) { a += 0x60; set_flag(c, FC, true); }
+            if (get_flag(c, FH) || (a & 0x0F) > 0x09) a += 0x06;
+        } else {
+            if (get_flag(c, FC)) a -= 0x60;
+            if (get_flag(c, FH)) a -= 0x06;
+        }
+        c->a = a;
+        set_flag(c, FZ, a == 0); set_flag(c, FH, false);
+        break;
+    }
+    case 0x2F: c->a = ~c->a; set_flag(c, FN, true); set_flag(c, FH, true); break;  /* CPL */
+    case 0x3F: set_flag(c, FN, false); set_flag(c, FH, false);
+               set_flag(c, FC, !get_flag(c, FC)); break;                  /* CCF */
+    case 0xF3: c->ime = false; c->ime_pending = 0; break;                 /* DI */
+    case 0xFB: if (!c->ime) c->ime_pending = 2; break;                    /* EI */
+    case 0x10: fetch8(g); break;                                          /* STOP: skip byte */
     case 0xC3: { uint16_t t = fetch16(g); internal(g); c->pc = t; break; }
     case 0xC5: push16(g, BC(c)); break;
     case 0xD5: push16(g, DE(c)); break;

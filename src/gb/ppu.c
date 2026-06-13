@@ -148,5 +148,10 @@ const uint8_t *gb_framebuffer(const GB *g) { return g->framebuffer; }
 static void render_begin_line(GB *g) { g->fx = 0; }
 static void render_step(GB *g) { g->fx++; }   /* advance so mode 3 terminates */
 
-/* ---- OAM DMA stub (replaced in Task 3) ---- */
-static void oam_dma(GB *g, uint8_t hi) { g->oam_dma_src = hi; }
+/* ---- OAM DMA (Task 3) ---- */
+static void oam_dma(GB *g, uint8_t hi) {
+    g->oam_dma_src = hi;
+    uint16_t src = (uint16_t)hi << 8;
+    for (int i = 0; i < 0xA0; i++)
+        g->oam[i] = gb_read8(g, (uint16_t)(src + i));   /* simplified: instantaneous copy */
+}

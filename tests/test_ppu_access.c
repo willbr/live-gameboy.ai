@@ -42,5 +42,15 @@ int main(void) {
         ASSERT_EQ(gb_read8(g, 0xFE00), 0x44);
         gb_free(g);
     }
+    {   /* OAM DMA copies 0xXX00-0xXX9F into OAM (FE00-FE9F) */
+        GB *g = fresh();
+        g->lcdc = 0x11;                   /* LCD off so OAM is readable for the check */
+        for (int i = 0; i < 0xA0; i++) gb_write8(g, 0xC000 + i, (uint8_t)(i ^ 0x5A));
+        gb_write8(g, 0xFF46, 0xC0);       /* DMA from 0xC000 */
+        for (int i = 0; i < 0xA0; i++)
+            ASSERT_EQ(gb_read8(g, 0xFE00 + i), (uint8_t)(i ^ 0x5A));
+        ASSERT_EQ(gb_ppu_read(g, 0xFF46), 0xC0);   /* register reads back source hi */
+        gb_free(g);
+    }
     TEST_MAIN_END();
 }

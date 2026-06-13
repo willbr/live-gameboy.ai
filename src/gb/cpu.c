@@ -167,11 +167,34 @@ static void halt(GB *g) {
         c->halted = true;
 }
 
+static const uint16_t int_vector[5] = {0x40, 0x48, 0x50, 0x58, 0x60};
+
+static bool service_interrupts(GB *g) {
+    CPU *c = &g->cpu;
+    uint8_t pending = g->ie & g->iflag & 0x1F;
+    if (!pending) return false;
+    c->halted = false;                 /* pending interrupt always wakes HALT */
+    if (!c->ime) return false;
+    for (int i = 0; i < 5; i++) {
+        if (pending & (1 << i)) {
+            c->ime = false;
+            c->ime_pending = 0;
+            g->iflag &= (uint8_t)~(1 << i);
+            internal(g); internal(g);  /* 2 wait M-cycles */
+            push16(g, c->pc);          /* 3 M-cycles (1 internal + 2 writes) */
+            c->pc = int_vector[i];
+            return true;
+        }
+    }
+    return false;
+}
+
 int gb_step(GB *g) {
     uint64_t start = g->cycles;
     CPU *c = &g->cpu;
 
-    /* interrupt dispatch lives here from Task 9 on */
+    if (service_interrupts(g))
+        return (int)(g->cycles - start);
 
     if (c->halted) { gb_tick(g, 4); return (int)(g->cycles - start); }
 
@@ -181,9 +204,6 @@ int gb_step(GB *g) {
 
     if (c->ime_pending && --c->ime_pending == 0)
         c->ime = true;
-
-    /* Temporary references to silence -Werror=unused-function until later tasks consume these */
-    (void)cond;
 
     return (int)(g->cycles - start);
 }
@@ -274,6 +294,33 @@ static void exec(GB *g, uint8_t op) {
     case 0xFB: if (!c->ime) c->ime_pending = 2; break;                    /* EI */
     case 0x10: fetch8(g); break;                                          /* STOP: skip byte */
     case 0xC3: { uint16_t t = fetch16(g); internal(g); c->pc = t; break; }
+    case 0x18: { int8_t e = (int8_t)fetch8(g); internal(g); c->pc += e; break; }
+    case 0x20: case 0x28: case 0x30: case 0x38: {        /* JR cc */
+        int8_t e = (int8_t)fetch8(g);
+        if (cond(c, (op >> 3) & 3)) { internal(g); c->pc += e; }
+        break;
+    }
+    case 0xC2: case 0xCA: case 0xD2: case 0xDA: {        /* JP cc */
+        uint16_t t = fetch16(g);
+        if (cond(c, (op >> 3) & 3)) { internal(g); c->pc = t; }
+        break;
+    }
+    case 0xCD: { uint16_t t = fetch16(g); push16(g, c->pc); c->pc = t; break; }
+    case 0xC4: case 0xCC: case 0xD4: case 0xDC: {        /* CALL cc */
+        uint16_t t = fetch16(g);
+        if (cond(c, (op >> 3) & 3)) { push16(g, c->pc); c->pc = t; }
+        break;
+    }
+    case 0xC9: c->pc = pop16(g); internal(g); break;     /* RET */
+    case 0xD9: c->pc = pop16(g); internal(g); c->ime = true; break;  /* RETI */
+    case 0xC0: case 0xC8: case 0xD0: case 0xD8:          /* RET cc */
+        internal(g);
+        if (cond(c, (op >> 3) & 3)) { c->pc = pop16(g); internal(g); }
+        break;
+    case 0xC7: case 0xCF: case 0xD7: case 0xDF:
+    case 0xE7: case 0xEF: case 0xF7: case 0xFF:          /* RST */
+        push16(g, c->pc); c->pc = (uint16_t)(op & 0x38); break;
+    case 0xE9: c->pc = HL(c); break;                     /* JP HL */
     case 0xC5: push16(g, BC(c)); break;
     case 0xD5: push16(g, DE(c)); break;
     case 0xE5: push16(g, HL(c)); break;

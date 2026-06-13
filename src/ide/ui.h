@@ -14,6 +14,7 @@
 #define IDE_UI_H
 
 #include <stdint.h>
+#include <stdbool.h>
 
 /* RGBA8888 canvas; px[y*w*4 + x*4 + 0] = R, +1 = G, +2 = B, +3 = A */
 typedef struct { uint8_t *px; int w, h; } Canvas;
@@ -44,5 +45,23 @@ void   ui_blit_gb(Canvas *c, const uint8_t *fb, int x, int y, int scale,
 
 /* Write an 8-bit RGBA PNG (color type 6) via zlib.  Returns 0 on success. */
 int    ui_save_png(const Canvas *c, const char *path);
+
+/* -------------------------------------------------------------------------
+ * Single-line text input. Fixed-capacity, caret at the end (no mid-line
+ * edit in v1). Used for the debugger address field and the code editor.
+ * ------------------------------------------------------------------------- */
+#define TEXTFIELD_CAP 32
+typedef struct {
+    char text[TEXTFIELD_CAP];
+    int  len;
+    bool active;
+} TextField;
+
+void textfield_clear(TextField *t);
+void textfield_putc(TextField *t, char ch);   /* append a printable char if room */
+void textfield_backspace(TextField *t);
+/* Render at (x,y): the text plus a caret block when active. */
+void textfield_render(Canvas *c, int x, int y, const TextField *t,
+                      uint32_t fg, uint32_t bg);
 
 #endif /* IDE_UI_H */

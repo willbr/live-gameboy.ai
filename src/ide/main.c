@@ -121,6 +121,11 @@ static int run_interactive(const char *path) {
     while (running) {
         SDL_Event ev;
         while (SDL_PollEvent(&ev)) {
+            /* Window is 2x the logical canvas with letterbox presentation, so
+             * mouse events arrive in window pixels. Convert them to logical
+             * (canvas) coordinates so they match the panel hit-test rects. */
+            SDL_ConvertEventToRenderCoordinates(ren, &ev);
+
             switch (ev.type) {
             case SDL_EVENT_QUIT:
                 running = false;

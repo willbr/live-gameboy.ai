@@ -99,16 +99,12 @@ Main:
     jr .loop
 
     ; ---------------------------------------------------------------
-    ; Tile data: 8 rows of 2bpp (16 bytes total)
-    ;   Rows 0,2,4,6: $FF,$FF -> color 3 (solid dark stripe)
-    ;   Rows 1,3,5,7: $00,$00 -> color 0 (solid light stripe)
+    ; Tile data: an INCBIN'd asset so the IDE tile editor can paint it.
+    ;   stripe.2bpp = 16 bytes: rows FF,FF / 00,00 alternating
+    ;   -> horizontal stripes (color 3 dark / color 0 light).
+    ; Because the whole background uses tile 0, painting this one tile in
+    ; the IDE (select VRAM tile 0, click in the TILE editor) changes the
+    ; ENTIRE screen live via VRAM provenance — no reload needed.
     ; ---------------------------------------------------------------
 .TileData:
-    db $FF,$FF   ; row 0 — dark
-    db $00,$00   ; row 1 — light
-    db $FF,$FF   ; row 2 — dark
-    db $00,$00   ; row 3 — light
-    db $FF,$FF   ; row 4 — dark
-    db $00,$00   ; row 5 — light
-    db $FF,$FF   ; row 6 — dark
-    db $00,$00   ; row 7 — light
+    incbin "examples/stripe.2bpp"

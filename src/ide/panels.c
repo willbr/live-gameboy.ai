@@ -456,7 +456,23 @@ void panel_tilemap(Canvas *c, struct GB *gb) {
             ui_fill_rect(c, ox + tx * cell, oy + ty * cell, cell, cell, GRAY[shade]);
         }
     }
-    /* viewport rectangle (SCX/SCY in tile-space, scaled by cell/8) */
-    int vx = ox + (gb->scx / 8) * cell, vy = oy + (gb->scy / 8) * cell;
-    ui_rect(c, vx, vy, 20 * cell, 18 * cell, 0xFFD700FF);
+    /* Viewport rectangle (SCX/SCY), wrapping around the 256x256 BG map like real
+     * hardware: when the 160x144 window scrolls off an edge it re-enters from the
+     * opposite side. Drawn per-pixel in thumbnail space modulo the map span, so
+     * the outline always stays clipped to the 32x32 grid. */
+    int map_px = 32 * cell;                          /* 128 px thumbnail = 256 BG px */
+    int vL = (gb->scx * cell) / 8;                   /* left/top edges in thumbnail px */
+    int vT = (gb->scy * cell) / 8;
+    int vW = 160 * cell / 8, vH = 144 * cell / 8;    /* 80 x 72 px window */
+    uint32_t vcol = 0xFFD700FF;
+    for (int i = 0; i < vW; i++) {                   /* top + bottom edges */
+        int px = ox + (vL + i) % map_px;
+        ui_fill_rect(c, px, oy + vT % map_px, 1, 1, vcol);
+        ui_fill_rect(c, px, oy + (vT + vH - 1) % map_px, 1, 1, vcol);
+    }
+    for (int j = 0; j < vH; j++) {                   /* left + right edges */
+        int py = oy + (vT + j) % map_px;
+        ui_fill_rect(c, ox + vL % map_px, py, 1, 1, vcol);
+        ui_fill_rect(c, ox + (vL + vW - 1) % map_px, py, 1, 1, vcol);
+    }
 }

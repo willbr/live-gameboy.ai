@@ -38,6 +38,8 @@
 
 #define LAYOUT_GRANULE  16          /* slot alignment / slack granule */
 #define MAX_BANKS       256         /* enough for the largest MBC ROMs */
+#define HDR_START       0x0100u     /* cartridge header: entry/logo/checksums */
+#define HDR_END         0x0150u     /* first byte of code space after header  */
 
 /* -------------------------------------------------------------------------
  * Internal helpers
@@ -299,6 +301,16 @@ AsmPlacement *layout_plan(AsmSymbol *syms, int nsyms,
             if (bank > 0 && aligned < bank_base) aligned = bank_base;
             /* For ROM0, respect sec_base if this is the same bank */
             if (bank == sec_bank && aligned < sec_base) aligned = sec_base;
+
+            /* Don't place functions on top of the cartridge header
+             * ($0100-$014F: entry point, Nintendo logo, title, checksums).
+             * If a ROM0 slot would start in or extend into that region, bump
+             * it up to $0150.  Small programs (slots ending at/below $0100)
+             * are unaffected, preserving the ROM0-starts-at-$0000 contract. */
+            if (bank == 0 &&
+                aligned < HDR_END && (uint16_t)(aligned + slot_sz) > HDR_START) {
+                aligned = HDR_END;
+            }
 
             assigned_addr = aligned;
             assigned_slot = slot_sz;

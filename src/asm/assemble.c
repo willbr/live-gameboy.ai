@@ -1162,17 +1162,35 @@ AsmResult asm_assemble_mem(const char *src, const char *filename,
         }
     }
 
-    /* Compute symbol sizes: distance to next label in same section */
+    /* Compute symbol sizes: distance to the next label in the same section.
+     *
+     * For GLOBAL labels (functions) the size must span the entire function
+     * body, i.e. up to the next GLOBAL label — local labels (.foo, expanded
+     * to "Global.foo") inside the body must NOT shorten it.  Otherwise the
+     * layout pass would size a function's slot only as far as its first local
+     * label, and the packer would place the following functions on top of the
+     * remainder of this one (e.g. tail code / INCBIN assets).  This size is
+     * consumed by layout.c (function slot sizing); see collect_globals() for
+     * the matching local-label test ('.' after position 0 of the name). */
     for (int i = 0; i < st.count; i++) {
         if (st.syms[i].bank < 0) continue; /* constant */
+        bool i_local = false;
+        for (size_t k = 1; st.syms[i].name[k]; k++)
+            if (st.syms[i].name[k] == '.') { i_local = true; break; }
         uint32_t next_off = sec.cur_off;    /* end of section */
         for (int j = 0; j < st.count; j++) {
             if (i == j) continue;
-            if (st.syms[j].bank == st.syms[i].bank &&
-                st.syms[j].off > st.syms[i].off &&
-                st.syms[j].off < next_off) {
-                next_off = st.syms[j].off;
+            if (st.syms[j].bank != st.syms[i].bank) continue;
+            if (st.syms[j].off <= st.syms[i].off) continue;
+            if (st.syms[j].off >= next_off) continue;
+            /* When sizing a global, only other globals are boundaries. */
+            if (!i_local) {
+                bool j_local = false;
+                for (size_t k = 1; st.syms[j].name[k]; k++)
+                    if (st.syms[j].name[k] == '.') { j_local = true; break; }
+                if (j_local) continue;
             }
+            next_off = st.syms[j].off;
         }
         st.syms[i].size = (int)(next_off - st.syms[i].off);
     }

@@ -96,7 +96,24 @@ shell-shot: live-gameboy
 ide-shot: live-gameboy-ide
 	./live-gameboy-ide --ide-shot examples/demo.asm build/ide.png 60
 
+# Example games — headless IDE screenshots (CI-friendly, no window)
+pong-shot: live-gameboy-ide
+	./live-gameboy-ide --ide-shot examples/pong.asm build/pong.png 60
+
+snake-shot: live-gameboy-ide
+	./live-gameboy-ide --ide-shot examples/snake.asm build/snake.png 60
+
+breakout-shot: live-gameboy-ide
+	./live-gameboy-ide --ide-shot examples/breakout.asm build/breakout.png 60
+
+# Build each example as a standalone .gb (relies on the entry-point patch)
+examples: gbasm
+	./gbasm examples/pong.asm     -o build/pong.gb
+	./gbasm examples/snake.asm    -o build/snake.gb
+	./gbasm examples/breakout.asm -o build/breakout.gb
+	@echo "examples: OK (build/{pong,snake,breakout}.gb)"
+
 clean:
 	rm -rf $(BUILD) live-gameboy live-gameboy-ide gbasm
 
-.PHONY: all test blargg roms clean acid2 shell-shot sound gbasm asm-demo live-gameboy-ide ide-shot
+.PHONY: all test blargg roms clean acid2 shell-shot sound gbasm asm-demo live-gameboy-ide ide-shot pong-shot snake-shot breakout-shot examples

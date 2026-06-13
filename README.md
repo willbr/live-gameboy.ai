@@ -86,6 +86,21 @@ watch the running game hot-swap with RAM/VRAM state intact. Use F8 instead when
 a change is in init/setup code (e.g. tile or tilemap setup) that only runs once
 at startup — F5 keeps running state, so it won't re-run that code.
 
+### Example games
+
+Three playable examples in `examples/`, each built to show off live-coding.
+Run any of them with the IDE (`./live-gameboy-ide examples/<game>.asm`) and look
+for the `TRY THIS LIVE` recipe at the top of each file.
+
+| Game | File | Signature live-edit hook |
+|------|------|--------------------------|
+| Pong | `examples/pong.asm` | F5 hot-reload `UpdateBall` physics mid-rally |
+| Snake | `examples/snake.asm` | F5 hot-reload `StepSnake` movement/speed rule |
+| Breakout | `examples/breakout.asm` | Edit the brick field live in the BG MAP / paint the brick tile |
+
+Build them as standalone ROMs with `make examples`, or take headless
+screenshots with `make pong-shot` / `make snake-shot` / `make breakout-shot`.
+
 ## Assemble
 
 The built-in `gbasm` assembler compiles RGBDS-inspired SM83 assembly to a valid
@@ -94,6 +109,11 @@ Game Boy ROM with a complete cartridge header (logo, checksums):
     make gbasm
     ./gbasm game.asm -o game.gb [--sym game.sym]
     ./live-gameboy game.gb
+
+The assembler writes a `JP Main` at the entry point `$0100` whenever the source
+defines a `Main:` global in ROM0, so `./gbasm game.asm -o game.gb` followed by
+`./live-gameboy game.gb` boots straight into your code. (The IDE/live path does
+the same patch.)
 
 See `examples/hello.asm` for a working serial-output demo.  The `--sym` flag
 writes a `BB:AAAA Name` symbol file for use with debuggers.

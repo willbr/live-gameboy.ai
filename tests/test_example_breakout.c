@@ -66,10 +66,37 @@ static void test_breakout_paddle_left(void) {
     gb_free(gb); asm_free(&r);
 }
 
+/* Init powers on the APU and routes channels (NR51=$FF vs reset $F3). */
+static void test_breakout_apu_on(void) {
+    AsmResult r = ex_assemble("examples/breakout.asm");
+    ASSERT_TRUE(r.ok);
+    GB *gb = gb_new();
+    gb_load_rom(gb, r.rom, r.rom_size);
+    gb_reset(gb);
+    ex_run(gb, 5, 2000000);
+    ASSERT_TRUE(gb_read8(gb, 0xFF26) & 0x80);
+    ASSERT_EQ(gb_read8(gb, 0xFF25), 0xFF);
+    gb_free(gb); asm_free(&r);
+}
+
+/* Breaking a brick fires the CH4 noise burst as the ball reaches the field. */
+static void test_breakout_break_sfx(void) {
+    AsmResult r = ex_assemble("examples/breakout.asm");
+    ASSERT_TRUE(r.ok);
+    GB *gb = gb_new();
+    gb_load_rom(gb, r.rom, r.rom_size);
+    gb_reset(gb);
+    uint8_t seen = ex_run_watch_nr52(gb, 150, 12000000);
+    ASSERT_TRUE(seen & 0x08);   /* CH4 noise */
+    gb_free(gb); asm_free(&r);
+}
+
 int main(void) {
     test_breakout_boots();
     test_breakout_ball_moves();
     test_breakout_clears_brick();
     test_breakout_paddle_left();
+    test_breakout_apu_on();
+    test_breakout_break_sfx();
     TEST_MAIN_END();
 }

@@ -8,6 +8,9 @@
 ; 3. HOT-RELOAD PHYSICS (F5): UpdateBall holds the bounce math; edit the
 ;    reflect values / speed and press F5 mid-game.
 ; 4. F8 (soft reset) re-runs InitBricks to refill the field.
+; 5. TUNE THE SOUND (F5): edit the BRICK-BREAK noise pitch in .BrickHit,
+;    the PADDLE-HIT pitch in UpdateBall, or the WALL pitch in SfxWall;
+;    press F5 and hear it change.
 ;
 ; Controls: Left/Right move the paddle.
 
@@ -78,6 +81,14 @@ Main:
     ld ($C0A4), a            ; padX
 
     call InitBricks
+
+    ; --- Sound: power on APU, full volume, route all channels both sides ---
+    ld a, $80
+    ldh ($26), a             ; NR52 = APU on (write FIRST)
+    ld a, $77
+    ldh ($24), a             ; NR50 = master volume L/R
+    ld a, $FF
+    ldh ($25), a             ; NR51 = all channels to both speakers
 
     ld a, $93                ; LCD on, OBJ on, BG on
     ldh ($40), a
@@ -198,12 +209,14 @@ UpdateBall:
     jr nc, .xhi
     ld a, 1
     ld ($C0A2), a
+    call SfxWall
     jr .yax
 .xhi:
     cp 152
     jr c, .yax
     ld a, $FF
     ld ($C0A2), a
+    call SfxWall
 .yax:
     ; Y axis
     ld a, ($C0A3)
@@ -215,12 +228,15 @@ UpdateBall:
     jr nc, .ylo
     ld a, 1
     ld ($C0A3), a
+    call SfxWall
     jr .brick
 .ylo:
     cp 140
     jr c, .brick
     ld a, $FF
     ld ($C0A3), a
+    ld de, $076C             ; PADDLE-HIT pitch (~885 Hz)  ; TWEAK + F5
+    call SfxTone
 .brick:
     call .BrickHit
     ret
@@ -258,6 +274,8 @@ UpdateBall:
     ret nz
     xor a
     ld (hl), a             ; clear brick cell (live tilemap edit by the game)
+    ld b, $33             ; BRICK-BREAK noise pitch (NR43) ; TWEAK + F5
+    call SfxNoise
     ; reflect DY: going up ($FF) -> down (1); going down (1) -> up ($FF)
     ld a, ($C0A3)
     cp 1
@@ -268,4 +286,40 @@ UpdateBall:
 .setUp:
     ld a, $FF
     ld ($C0A3), a
+    ret
+
+; ====================== SOUND ======================
+; SfxTone — short CH1 (pulse) blip. In: D=freq hi (bits2-0), E=freq lo.
+; Clobbers A; reads (preserves) D,E; preserves B,C,HL.
+SfxTone:
+    xor a
+    ldh ($10), a             ; NR10 = no sweep
+    ld a, $A0
+    ldh ($11), a             ; NR11 = duty 50% + length
+    ld a, $F2
+    ldh ($12), a             ; NR12 = vol 15, decay (DAC on)
+    ld a, e
+    ldh ($13), a             ; NR13 = freq lo
+    ld a, d
+    or $C0
+    ldh ($14), a             ; NR14 = trigger + length-enable + freq hi
+    ret
+
+; SfxNoise — short CH4 (noise) burst. In: B=NR43 value (noise pitch).
+; Clobbers A,B; preserves C,D,E,HL.
+SfxNoise:
+    ld a, $20
+    ldh ($20), a             ; NR41 = length (short)
+    ld a, $F2
+    ldh ($21), a             ; NR42 = vol 15, decay (DAC on)
+    ld a, b
+    ldh ($22), a             ; NR43 = clock/divisor (pitch)
+    ld a, $C0
+    ldh ($23), a             ; NR44 = trigger + length-enable
+    ret
+
+; SfxWall — soft blip on a side/top wall bounce. Clobbers A,D,E.
+SfxWall:
+    ld de, $0780             ; WALL pitch (~1024 Hz)       ; TWEAK + F5
+    call SfxTone
     ret

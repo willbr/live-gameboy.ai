@@ -241,4 +241,79 @@ AsmStmt *asm_parse(const AsmToken *toks,
                    AsmDiag       **diags,
                    int            *ndiags);
 
+/* -----------------------------------------------------------------------
+ * Encoder API
+ *
+ * asm_encode() assembles one instruction into `out` (caller provides at
+ * least 3 bytes).  Returns the byte count (1–3) or -1 on error.
+ *
+ * mnemonic  — NUL-terminated mnemonic string (case-insensitive)
+ * toks      — the full token array (for expression evaluation)
+ * ops       — operand array (0..4 entries)
+ * nops      — operand count
+ * cur_addr  — current CPU address (value of the '$' symbol)
+ * syms      — symbol table for expression evaluation (may be NULL)
+ * out       — output buffer (at least 3 bytes)
+ * err       — diagnostic filled on error (may be NULL)
+ * --------------------------------------------------------------------- */
+int asm_encode(const char          *mnemonic,
+               const AsmToken      *toks,
+               const AsmOperand    *ops,
+               int                  nops,
+               uint16_t             cur_addr,
+               const AsmSymbolTable *syms,
+               uint8_t             *out,
+               AsmDiag             *err);
+
+/* -----------------------------------------------------------------------
+ * Build database (output of two-pass assembly)
+ * --------------------------------------------------------------------- */
+
+/*
+ * AsmResult is returned by asm_assemble().  All pointer fields are
+ * heap-allocated; call asm_free() when done.
+ *
+ * Fields:
+ *   rom         — the ROM image (rom_size bytes, zero-padded to >= 0x8000)
+ *   rom_size    — byte count of rom (always >= 0x8000)
+ *   syms        — resolved symbol table (nsyms entries)
+ *   linemap     — parallel arrays: linemap[i].line -> linemap[i].off
+ *                 One entry per emitting statement (instructions, DB/DW/DS).
+ *                 Sorted by line number.
+ *   nlines      — number of linemap entries
+ *   prov_line   — per-byte source line: prov_line[off] = 1-based source line
+ *                 that produced byte at linear ROM offset `off`, or -1.
+ *   diags       — diagnostics list (ndiags entries)
+ *   ok          — false if any error occurred; ROM content is partial.
+ */
+typedef struct {
+    uint8_t  *rom;
+    size_t    rom_size;
+
+    AsmSymbol *syms;
+    int        nsyms;
+
+    struct { int line; uint32_t off; } *linemap;
+    int nlines;
+
+    int32_t  *prov_line;   /* rom_size entries */
+
+    AsmDiag  *diags;
+    int       ndiags;
+
+    bool ok;
+} AsmResult;
+
+/*
+ * Assemble `src` (NUL-terminated RGBDS-inspired SM83 assembly source).
+ * `filename` is used only in diagnostic messages (may be NULL).
+ *
+ * Always returns a fully initialised AsmResult; check result.ok.
+ * Call asm_free() to release all heap memory when done.
+ */
+AsmResult asm_assemble(const char *src, const char *filename);
+
+/* Release all heap memory owned by an AsmResult. */
+void asm_free(AsmResult *r);
+
 #endif /* ASM_H */

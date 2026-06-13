@@ -197,11 +197,17 @@ static void lex_all(Lexer *lx)
             continue;
         }
 
-        /* ---- hex number: $hhhh ---- */
+        /* ---- hex number: $hhhh  OR bare $ (current-address symbol) ---- */
         if (c == '$') {
             int ln = lx->line, co = lx->col;
             const char *start = lx->src + lx->pos;
             advance(lx); /* skip '$' */
+            if (!is_hex_digit(cur(lx))) {
+                /* Bare '$' — current address; emit as TOK_PUNCT so the
+                 * expression evaluator can distinguish it from a number. */
+                push_tok(lx, TOK_PUNCT, start, 1, 0, ln, co);
+                continue;
+            }
             long val = 0;
             while (is_hex_digit(cur(lx))) {
                 val = val * 16 + hex_val(cur(lx));

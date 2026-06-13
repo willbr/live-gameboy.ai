@@ -90,6 +90,37 @@ static void test_pong_sfx_fires(void) {
     gb_free(gb); asm_free(&r);
 }
 
+/* The APU produces NON-SILENT PCM during gameplay, drained the way the IDE
+ * does it: step with gb_step only (mirroring ide_run_slice) and pull samples
+ * via gb_audio_read. Guards the full APU->PCM audibility path — a stronger
+ * check than the NR52 status bit (which can be set while output is silent). */
+static void test_pong_audio_nonsilent(void) {
+    AsmResult r = ex_assemble("examples/pong.asm");
+    ASSERT_TRUE(r.ok);
+    GB *gb = gb_new();
+    gb_load_rom(gb, r.rom, r.rom_size);
+    gb_reset(gb);                       /* APU sample rate defaults to 48000 */
+    float buf[4096];
+    long total = 0;
+    float peak = 0.0f;
+    for (int f = 0; f < 400; f++) {
+        gb->frame_ready = false;
+        int guard = 0;
+        while (!gb->frame_ready && guard++ < 2000000) gb_step(gb);
+        int n;
+        while ((n = gb_audio_read(gb, buf, 4096)) > 0) {
+            total += n;
+            for (int i = 0; i < n; i++) {
+                float a = buf[i] < 0 ? -buf[i] : buf[i];
+                if (a > peak) peak = a;
+            }
+        }
+    }
+    ASSERT_TRUE(total > 0);             /* samples were produced and drained */
+    ASSERT_TRUE(peak > 0.05f);          /* non-silent: an SFX moved the DAC */
+    gb_free(gb); asm_free(&r);
+}
+
 int main(void) {
     test_pong_boots();
     test_pong_ball_moves();
@@ -97,5 +128,6 @@ int main(void) {
     test_pong_paddle_up();
     test_pong_apu_on();
     test_pong_sfx_fires();
+    test_pong_audio_nonsilent();
     TEST_MAIN_END();
 }

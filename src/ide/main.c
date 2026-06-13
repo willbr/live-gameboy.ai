@@ -69,7 +69,7 @@ static int run_interactive(const char *path) {
         return 1;
     }
 
-    if (!SDL_Init(SDL_INIT_VIDEO)) {
+    if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO)) {
         fprintf(stderr, "SDL_Init: %s\n", SDL_GetError());
         ide_free(s);
         return 1;
@@ -116,6 +116,20 @@ static int run_interactive(const char *path) {
     int te_x, te_y, te_w, te_h;  /* Tile editor */
     ide_panel_rect(PANEL_VRAM_TILES,  &vr_x, &vr_y, &vr_w, &vr_h);
     ide_panel_rect(PANEL_TILE_EDITOR, &te_x, &te_y, &te_w, &te_h);
+
+    /* Audio: open an SDL playback stream and feed it APU samples each frame.
+     * (The APU's sample rate defaults to 48000; set it explicitly to match.) */
+    gb_apu_set_sample_rate(ide_gb(s), 48000);
+    SDL_AudioSpec aspec;
+    aspec.freq = 48000;
+    aspec.format = SDL_AUDIO_F32;
+    aspec.channels = 2;
+    SDL_AudioStream *audio =
+        SDL_OpenAudioDeviceStream(SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK, &aspec, NULL, NULL);
+    if (!audio)
+        fprintf(stderr, "SDL_OpenAudioDeviceStream: %s\n", SDL_GetError());
+    else
+        SDL_ResumeAudioStreamDevice(audio);
 
     bool running = true;
     const double frame_ms = 1000.0 / 59.7273;
@@ -261,6 +275,14 @@ static int run_interactive(const char *path) {
         /* Step emulator (respects exec mode: running/paused/step) */
         ide_run_slice(s);
 
+        /* Drain APU samples to the audio device (silent when paused: no new samples) */
+        if (audio) {
+            static float abuf[4096];
+            int n;
+            while ((n = gb_audio_read(ide_gb(s), abuf, 4096)) > 0)
+                SDL_PutAudioStreamData(audio, abuf, n * (int)sizeof(float));
+        }
+
         /* Render IDE panels into canvas */
         ide_render(s, &canvas);
 
@@ -274,6 +296,7 @@ static int run_interactive(const char *path) {
     }
 
     canvas_free(&canvas);
+    if (audio) SDL_DestroyAudioStream(audio);
     SDL_DestroyTexture(tex);
     SDL_DestroyRenderer(ren);
     SDL_DestroyWindow(win);

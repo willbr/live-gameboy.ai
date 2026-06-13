@@ -366,5 +366,116 @@ int main(void) {
         gb_free(g);
     }
 
+    /* ---- Task 4: Noise channel CH4 tests ---- */
+
+    {   /* Test 1: CH4 triggered with DAC on produces non-silent, non-constant (noisy) output,
+           and NR52 bit3 is set. */
+        GB *g = fresh();
+        gb_apu_set_sample_rate(g, 48000);
+        gb_write8(g, 0xFF26, 0x80);  /* power on */
+        /* NR42 = 0xF0: vol=15, dir=down (bit3=0), period=0; DAC on (bits 7-3 != 0) */
+        gb_write8(g, 0xFF21, 0xF0);
+        /* NR43 = 0x00: shift=0, width=15-bit, divisor r=0 => timer = 8<<0 = 8 T-cycles (fastest) */
+        gb_write8(g, 0xFF22, 0x00);
+        /* NR44: trigger (bit7) + no length-enable => 0x80 */
+        gb_write8(g, 0xFF23, 0x80);
+
+        /* NR52 bit3 must be set after trigger */
+        ASSERT_TRUE(gb_read8(g, 0xFF26) & 0x08);
+
+        /* Tick ~4000 T-cycles to produce ~2 48kHz samples and clock LFSR many times */
+        gb_tick(g, 4000);
+
+        float buf[1024];
+        int n = gb_audio_read(g, buf, 1024);
+        ASSERT_TRUE(n > 0);
+
+        /* Collect left-channel samples (even indices) */
+        float min_val = 2.0f, max_val = -2.0f;
+        int distinct = 0;
+        float prev = 999.0f;
+        for (int i = 0; i < n; i += 2) {
+            if (buf[i] > max_val) max_val = buf[i];
+            if (buf[i] < min_val) min_val = buf[i];
+            if (buf[i] != prev) { distinct++; prev = buf[i]; }
+        }
+        /* Output must be non-silent (not all zero) */
+        ASSERT_TRUE(max_val > 0.01f || min_val < -0.01f);
+        /* Output must not be constant — noise visits multiple distinct values */
+        ASSERT_TRUE(distinct > 1);
+        gb_free(g);
+    }
+
+    {   /* Test 2: DAC off (NR42=0x00) + trigger: NR52 bit3 stays 0, output is silent. */
+        GB *g = fresh();
+        gb_apu_set_sample_rate(g, 48000);
+        gb_write8(g, 0xFF26, 0x80);
+        /* NR42 = 0x00: all zeros => DAC off */
+        gb_write8(g, 0xFF21, 0x00);
+        gb_write8(g, 0xFF22, 0x00);
+        /* Trigger attempt */
+        gb_write8(g, 0xFF23, 0x80);
+        /* CH4 must NOT be enabled */
+        ASSERT_EQ(gb_read8(g, 0xFF26) & 0x08, 0x00);
+
+        gb_tick(g, 8192);
+        float buf[512];
+        int n = gb_audio_read(g, buf, 512);
+        ASSERT_TRUE(n > 0);
+        int all_silent = 1;
+        for (int i = 0; i < n; i++) {
+            if (buf[i] > 0.01f || buf[i] < -0.01f) { all_silent = 0; break; }
+        }
+        ASSERT_TRUE(all_silent);
+        gb_free(g);
+    }
+
+    {   /* Test 3: Length counter disables CH4 after expiry.
+           NR41 length load = 63 => counter = 64 - 63 = 1 step.
+           One length clock fires at 256 Hz step. With 2 FS periods (32768 T-cycles) it must expire. */
+        GB *g = fresh();
+        gb_apu_set_sample_rate(g, 48000);
+        gb_write8(g, 0xFF26, 0x80);
+        /* NR41: length = 63 (bits 5-0) => counter = 1 */
+        gb_write8(g, 0xFF20, 63);
+        /* NR42: DAC on, vol=15 */
+        gb_write8(g, 0xFF21, 0xF0);
+        gb_write8(g, 0xFF22, 0x00);
+        /* NR44: trigger(bit7) + length-enable(bit6) => 0xC0 */
+        gb_write8(g, 0xFF23, 0xC0);
+        /* Should be enabled right after trigger */
+        ASSERT_TRUE(gb_read8(g, 0xFF26) & 0x08);
+
+        /* Advance enough cycles for at least 2 length clocks (2 * 8192 * 2 = 32768 T-cycles) */
+        gb_tick(g, 32768 * 2);
+        /* CH4 must be disabled */
+        ASSERT_EQ(gb_read8(g, 0xFF26) & 0x08, 0x00);
+        gb_free(g);
+    }
+
+    {   /* Test 4: 7-bit width mode (NR43 bit3 set) still produces non-silent output. */
+        GB *g = fresh();
+        gb_apu_set_sample_rate(g, 48000);
+        gb_write8(g, 0xFF26, 0x80);
+        gb_write8(g, 0xFF21, 0xF0);  /* DAC on, vol=15 */
+        /* NR43: width mode bit3 set, shift=0, r=0 => fast clock in 7-bit mode */
+        gb_write8(g, 0xFF22, 0x08);
+        gb_write8(g, 0xFF23, 0x80);  /* trigger */
+        ASSERT_TRUE(gb_read8(g, 0xFF26) & 0x08);
+
+        gb_tick(g, 4000);
+        float buf[1024];
+        int n = gb_audio_read(g, buf, 1024);
+        ASSERT_TRUE(n > 0);
+        float min_val = 2.0f, max_val = -2.0f;
+        for (int i = 0; i < n; i += 2) {
+            if (buf[i] > max_val) max_val = buf[i];
+            if (buf[i] < min_val) min_val = buf[i];
+        }
+        /* 7-bit mode still produces non-silent output */
+        ASSERT_TRUE(max_val > 0.01f || min_val < -0.01f);
+        gb_free(g);
+    }
+
     TEST_MAIN_END();
 }

@@ -295,6 +295,30 @@ static void trigger_ch3(GB *g) {
     g->ch3.pos = 0;
 }
 
+/* CH4 noise divisor table: indexed by NR43 bits 2-0 (r) */
+static const uint16_t NOISE_DIVISOR[8] = { 8, 16, 32, 48, 64, 80, 96, 112 };
+
+static void trigger_ch4(GB *g) {
+    uint8_t nr42 = g->apu_reg[0x11];  /* NR42 = FF21 */
+    /* DAC on if NR42 bits 7-3 != 0 */
+    g->ch4.dac = (nr42 & 0xF8) != 0;
+    if (!g->ch4.dac) { g->ch4.enabled = false; return; }
+
+    g->ch4.enabled = true;
+    /* Reload length if 0 */
+    if (g->ch4.len == 0) g->ch4.len = 64;
+    /* Reload freq timer: divisor[r] << s */
+    uint8_t nr43 = g->apu_reg[0x12];  /* NR43 = FF22 */
+    uint8_t s = (nr43 >> 4) & 0x0F;   /* clock shift */
+    uint8_t r = nr43 & 0x07;          /* divisor code */
+    g->ch4.timer = (uint16_t)(NOISE_DIVISOR[r] << s);
+    /* Reload envelope: initial volume and timer from NR42 */
+    g->ch4.vol = (nr42 >> 4) & 0x0F;
+    g->ch4.env_timer = nr42 & 0x07;
+    /* Reset LFSR to all-ones */
+    g->ch4.lfsr = 0x7FFF;
+}
+
 /* ---- Per-channel digital output (0..15) ---- */
 
 static int ch1_output(GB *g) {
@@ -309,6 +333,14 @@ static int ch2_output(GB *g) {
     uint8_t nr21  = g->apu_reg[0x06];
     uint8_t duty  = (nr21 >> 6) & 0x03;
     return duty_bit(duty, g->ch2.duty_pos) ? g->ch2.vol : 0;
+}
+
+/* CH4 output: LFSR noise. Output bit = (~lfsr) & 1 (high when bit0 == 0). */
+static int ch4_output(GB *g) {
+    if (!g->ch4.enabled || !g->ch4.dac) return 0;
+    /* output high when LFSR bit0 == 0 */
+    int out_bit = (~g->ch4.lfsr) & 1;
+    return out_bit ? g->ch4.vol : 0;
 }
 
 /* Convert digital 0..15 sample to DAC float [-1, 1].
@@ -432,6 +464,16 @@ void gb_apu_write(GB *gb, uint16_t addr, uint8_t v) {
     case 0xFF1E:  /* NR34: CH3 trigger */
         if (v & 0x80) trigger_ch3(gb);
         break;
+    case 0xFF20:  /* NR41: CH4 length load */
+        gb->ch4.len = 64 - (v & 0x3F);
+        break;
+    case 0xFF21:  /* NR42: CH4 envelope — update DAC status */
+        gb->ch4.dac = (v & 0xF8) != 0;
+        if (!gb->ch4.dac) gb->ch4.enabled = false;
+        break;
+    case 0xFF23:  /* NR44: CH4 trigger */
+        if (v & 0x80) trigger_ch4(gb);
+        break;
     }
 }
 
@@ -500,6 +542,26 @@ void gb_apu_tick(GB *gb, int tcycles) {
             }
         }
 
+        /* Tick CH4 LFSR timer */
+        if (gb->ch4.enabled) {
+            if (gb->ch4.timer > 0) gb->ch4.timer--;
+            if (gb->ch4.timer == 0) {
+                /* Reload timer from NR43 */
+                uint8_t nr43 = gb->apu_reg[0x12];  /* NR43 = FF22 */
+                uint8_t s = (nr43 >> 4) & 0x0F;    /* clock shift */
+                uint8_t r = nr43 & 0x07;            /* divisor code */
+                uint16_t reload = (uint16_t)(NOISE_DIVISOR[r] << s);
+                gb->ch4.timer = reload ? reload : 1;  /* guard against 0 */
+                /* Clock the LFSR: xor = bit0 ^ bit1 */
+                uint16_t xor_bit = (gb->ch4.lfsr ^ (gb->ch4.lfsr >> 1)) & 1;
+                gb->ch4.lfsr = (gb->ch4.lfsr >> 1) | (xor_bit << 14);
+                /* 7-bit mode (NR43 bit3): also set bit6 */
+                if (nr43 & 0x08) {
+                    gb->ch4.lfsr = (gb->ch4.lfsr & ~0x40u) | (xor_bit << 6);
+                }
+            }
+        }
+
         /* Sample output: accumulate cycles and push mono-summed stereo at sample rate */
         gb->audio_accum += 1.0;
         while (gb->audio_accum >= cycles_per_sample) {
@@ -516,7 +578,9 @@ void gb_apu_tick(GB *gb, int tcycles) {
             if (gb->ch3.dac) {
                 sample += dac_float(ch3_output(gb));
             }
-            /* CH4 not yet implemented: contributes 0 */
+            if (gb->ch4.dac) {
+                sample += dac_float(ch4_output(gb));
+            }
 
             /* Divide by 4 (total channels) for mono sum, output as stereo */
             float mono = sample / 4.0f;

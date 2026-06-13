@@ -47,11 +47,11 @@ uint8_t gb_read8(GB *gb, uint16_t a) {
         if (off < gb->rom_size) return gb->rom[off];
         return 0xFF;
     }
-    if (a < 0xA000)  return gb->vram[a - 0x8000];
+    if (a < 0xA000)  return gb_ppu_vram_blocked(gb) ? 0xFF : gb->vram[a - 0x8000];
     if (a < 0xC000)  return 0xFF;                       /* cart RAM: none yet */
     if (a < 0xE000)  return gb->wram[a - 0xC000];
     if (a < 0xFE00)  return gb->wram[a - 0xE000];       /* echo */
-    if (a < 0xFEA0)  return gb->oam[a - 0xFE00];
+    if (a < 0xFEA0)  return gb_ppu_oam_blocked(gb) ? 0xFF : gb->oam[a - 0xFE00];
     if (a < 0xFF00)  return 0xFF;                       /* unusable */
     if (a < 0xFF80)  return io_read(gb, a & 0x7F);
     if (a < 0xFFFF)  return gb->hram[a - 0xFF80];
@@ -74,11 +74,11 @@ void gb_write8(GB *gb, uint16_t a, uint8_t v) {
         }
         return;
     }
-    if (a < 0xA000)  { gb->vram[a - 0x8000] = v; return; }
+    if (a < 0xA000)  { if (!gb_ppu_vram_blocked(gb)) gb->vram[a - 0x8000] = v; return; }
     if (a < 0xC000)  return;
     if (a < 0xE000)  { gb->wram[a - 0xC000] = v; return; }
     if (a < 0xFE00)  { gb->wram[a - 0xE000] = v; return; }
-    if (a < 0xFEA0)  { gb->oam[a - 0xFE00] = v; return; }
+    if (a < 0xFEA0)  { if (!gb_ppu_oam_blocked(gb)) gb->oam[a - 0xFE00] = v; return; }
     if (a < 0xFF00)  return;
     if (a < 0xFF80)  { io_write(gb, a & 0x7F, v); return; }
     if (a < 0xFFFF)  { gb->hram[a - 0xFF80] = v; return; }

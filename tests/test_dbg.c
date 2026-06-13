@@ -63,5 +63,36 @@ int main(void) {
         gb_free(g2);
     }
 
+    /* --- write watchpoint fires; read watchpoint fires --- */
+    {
+        GB *g3 = gb_new();
+        static uint8_t rom3[0x8000];
+        memset(rom3, 0, sizeof rom3);
+        /* 0150: LD A,$AA (3E AA); 0152: LD ($C000),A (EA 00 C0); 0155: LD A,($C000) (FA 00 C0); 0158: JR 0158 (18 FE) */
+        rom3[0x0150]=0x3E; rom3[0x0151]=0xAA;
+        rom3[0x0152]=0xEA; rom3[0x0153]=0x00; rom3[0x0154]=0xC0;
+        rom3[0x0155]=0xFA; rom3[0x0156]=0x00; rom3[0x0157]=0xC0;
+        rom3[0x0158]=0x18; rom3[0x0159]=0xFE;
+        gb_load_rom(g3, rom3, sizeof rom3);
+        gb_reset(g3);
+        g3->cpu.pc = 0x0150;
+        GbDebug *d3 = gb_debug_attach(g3);
+
+        gb_debug_add_wp(g3, 0xC000, false, true);  /* write-only */
+        int s = 0; while (!d3->hit && s < 50) { gb_step(g3); s++; }
+        ASSERT_TRUE(d3->hit);
+        ASSERT_EQ(d3->hit_kind, DBG_WATCH_WRITE);
+        ASSERT_EQ(d3->hit_addr, 0xC000);
+
+        /* swap to a read watchpoint and continue */
+        d3->wp_count = 0;
+        gb_debug_add_wp(g3, 0xC000, true, false);  /* read-only */
+        gb_debug_resume(g3);
+        s = 0; while (!d3->hit && s < 50) { gb_step(g3); s++; }
+        ASSERT_TRUE(d3->hit);
+        ASSERT_EQ(d3->hit_kind, DBG_WATCH_READ);
+        gb_free(g3);
+    }
+
     TEST_MAIN_END();
 }

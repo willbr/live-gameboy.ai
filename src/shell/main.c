@@ -50,10 +50,24 @@ static uint8_t poll_buttons(const bool *ks) {
 }
 
 int run_window(GB *g, int scale) {
-    if (!SDL_Init(SDL_INIT_VIDEO)) {
+    gb_apu_set_sample_rate(g, 48000);
+
+    if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO)) {
         fprintf(stderr, "SDL_Init: %s\n", SDL_GetError());
         return 1;
     }
+
+    SDL_AudioSpec spec;
+    spec.freq = 48000;
+    spec.format = SDL_AUDIO_F32;
+    spec.channels = 2;
+    SDL_AudioStream *audio = SDL_OpenAudioDeviceStream(SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK, &spec, NULL, NULL);
+    if (!audio) {
+        fprintf(stderr, "SDL_OpenAudioDeviceStream: %s\n", SDL_GetError());
+    } else {
+        SDL_ResumeAudioStreamDevice(audio);
+    }
+
     SDL_Window *win = SDL_CreateWindow("live-gameboy", 160 * scale, 144 * scale, 0);
     SDL_Renderer *ren = SDL_CreateRenderer(win, NULL);
     SDL_Texture *tex = SDL_CreateTexture(ren, SDL_PIXELFORMAT_RGBA8888,
@@ -77,6 +91,13 @@ int run_window(GB *g, int scale) {
 
         run_one_frame(g);
 
+        if (audio) {
+            static float abuf[4096];
+            int n;
+            while ((n = gb_audio_read(g, abuf, 4096)) > 0)
+                SDL_PutAudioStreamData(audio, abuf, n * (int)sizeof(float));
+        }
+
         framebuffer_to_rgba(gb_framebuffer(g), rgba, 1);   /* texture is 160x144; scale via renderer */
         SDL_UpdateTexture(tex, NULL, rgba, 160 * 4);
         SDL_RenderClear(ren);
@@ -89,6 +110,7 @@ int run_window(GB *g, int scale) {
     SDL_DestroyTexture(tex);
     SDL_DestroyRenderer(ren);
     SDL_DestroyWindow(win);
+    if (audio) SDL_DestroyAudioStream(audio);
     SDL_Quit();
     return 0;
 }

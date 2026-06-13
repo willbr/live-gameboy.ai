@@ -1,4 +1,5 @@
 #include "gb.h"
+#include "debug.h"
 #include <stdio.h>
 #include <stdlib.h>
 
@@ -194,6 +195,9 @@ static bool service_interrupts(GB *g) {
 int gb_step(GB *g) {
     uint64_t start = g->cycles;
     CPU *c = &g->cpu;
+
+    if (g->dbg && gb_debug_check_bp(g))
+        return 0;   /* paused at a breakpoint; instruction not executed */
 
     if (service_interrupts(g))
         return (int)(g->cycles - start);

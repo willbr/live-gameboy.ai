@@ -349,13 +349,66 @@ static float dac_float(int vol) {
     return (float)vol / 7.5f - 1.0f;
 }
 
+/* ---- Stereo mixer ---- */
+
+/* Compute one stereo (L, R) float pair from current channel outputs + NR50/NR51.
+ *
+ * NR51 (FF25, index 0x15): panning bits
+ *   bit0 = CH1 → right, bit1 = CH2 → right, bit2 = CH3 → right, bit3 = CH4 → right
+ *   bit4 = CH1 → left,  bit5 = CH2 → left,  bit6 = CH3 → left,  bit7 = CH4 → left
+ *
+ * NR50 (FF24, index 0x14): master volume
+ *   bits 6-4 = left master vol (0-7), bits 2-0 = right master vol (0-7)
+ *   Scaling: (vol + 1) / 8
+ *
+ * Each side: sum routed DAC outputs / 4 * (master_vol + 1) / 8
+ */
+static void apu_mix(GB *gb, float *out_left, float *out_right) {
+    uint8_t nr51 = gb->apu_reg[0x15];  /* FF25 panning */
+    uint8_t nr50 = gb->apu_reg[0x14];  /* FF24 master volume */
+
+    /* Get per-channel DAC float values (0 if channel off / DAC off) */
+    float d1 = gb->ch1.dac ? dac_float(ch1_output(gb)) : 0.0f;
+    float d2 = gb->ch2.dac ? dac_float(ch2_output(gb)) : 0.0f;
+    float d3 = gb->ch3.dac ? dac_float(ch3_output(gb)) : 0.0f;
+    float d4 = gb->ch4.dac ? dac_float(ch4_output(gb)) : 0.0f;
+
+    /* Sum channels routed to each side */
+    float left_sum = 0.0f;
+    if (nr51 & 0x10) left_sum += d1;   /* CH1 → left */
+    if (nr51 & 0x20) left_sum += d2;   /* CH2 → left */
+    if (nr51 & 0x40) left_sum += d3;   /* CH3 → left */
+    if (nr51 & 0x80) left_sum += d4;   /* CH4 → left */
+
+    float right_sum = 0.0f;
+    if (nr51 & 0x01) right_sum += d1;  /* CH1 → right */
+    if (nr51 & 0x02) right_sum += d2;  /* CH2 → right */
+    if (nr51 & 0x04) right_sum += d3;  /* CH3 → right */
+    if (nr51 & 0x08) right_sum += d4;  /* CH4 → right */
+
+    /* Divide by 4 to keep in [-1, 1] range */
+    left_sum  /= 4.0f;
+    right_sum /= 4.0f;
+
+    /* Apply master volume scaling: (vol + 1) / 8 */
+    uint8_t left_vol  = (nr50 >> 4) & 0x07;
+    uint8_t right_vol = nr50 & 0x07;
+    float left_scale  = (float)(left_vol  + 1) / 8.0f;
+    float right_scale = (float)(right_vol + 1) / 8.0f;
+
+    *out_left  = left_sum  * left_scale;
+    *out_right = right_sum * right_scale;
+}
+
 /* ---- Public API ---- */
 
 void gb_apu_reset(GB *gb) {
     memset(gb->apu_reg, 0, sizeof gb->apu_reg);
-    /* DMG post-boot: NR52 = 0xF1 -> power on, CH1 on */
+    /* DMG post-boot register values */
     gb->apu_power = true;
-    gb->apu_reg[0x16] = 0xF1;  /* index 0x16 = FF26 - FF10 */
+    gb->apu_reg[0x14] = 0x77;  /* NR50 (FF24): left vol=7, right vol=7 */
+    gb->apu_reg[0x15] = 0xF3;  /* NR51 (FF25): CH1/2/3/4→L, CH1/2→R (DMG default) */
+    gb->apu_reg[0x16] = 0xF1;  /* NR52 (FF26): power on, CH1 on */
     gb->fs_step = 0;
     gb->apu_div_prev = gb->div16;
     /* CH4 LFSR */
@@ -562,33 +615,19 @@ void gb_apu_tick(GB *gb, int tcycles) {
             }
         }
 
-        /* Sample output: accumulate cycles and push mono-summed stereo at sample rate */
+        /* Sample output: accumulate cycles and push stereo at sample rate */
         gb->audio_accum += 1.0;
         while (gb->audio_accum >= cycles_per_sample) {
             gb->audio_accum -= cycles_per_sample;
 
-            /* Mix channels: mono sum / 4 channels */
-            float sample = 0.0f;
-            if (gb->ch1.dac) {
-                sample += dac_float(ch1_output(gb));
-            }
-            if (gb->ch2.dac) {
-                sample += dac_float(ch2_output(gb));
-            }
-            if (gb->ch3.dac) {
-                sample += dac_float(ch3_output(gb));
-            }
-            if (gb->ch4.dac) {
-                sample += dac_float(ch4_output(gb));
-            }
-
-            /* Divide by 4 (total channels) for mono sum, output as stereo */
-            float mono = sample / 4.0f;
+            /* Compute stereo (L, R) sample pair from NR50/NR51 + channel DACs */
+            float left, right;
+            apu_mix(gb, &left, &right);
 
             int next_head = (gb->audio_head + 2) & (8192 - 1);
             if (next_head != gb->audio_tail) {
-                gb->audio_ring[gb->audio_head]     = mono;  /* L */
-                gb->audio_ring[gb->audio_head + 1] = mono;  /* R */
+                gb->audio_ring[gb->audio_head]     = left;
+                gb->audio_ring[gb->audio_head + 1] = right;
                 gb->audio_head = next_head;
             }
             /* if full, drop sample */

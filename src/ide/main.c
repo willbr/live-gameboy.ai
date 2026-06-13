@@ -151,11 +151,15 @@ static int run_interactive(const char *path) {
                         ide_soft_reset_from_file(s, path);
                     break;
 
-                /* Paint colour 0-3 */
-                case SDL_SCANCODE_0: ide_set_paint_color(s, 0); break;
-                case SDL_SCANCODE_1: ide_set_paint_color(s, 1); break;
-                case SDL_SCANCODE_2: ide_set_paint_color(s, 2); break;
-                case SDL_SCANCODE_3: ide_set_paint_color(s, 3); break;
+                /* Paint colour 0-3 (top row or numpad) */
+                case SDL_SCANCODE_0: case SDL_SCANCODE_KP_0:
+                    ide_set_paint_color(s, 0); break;
+                case SDL_SCANCODE_1: case SDL_SCANCODE_KP_1:
+                    ide_set_paint_color(s, 1); break;
+                case SDL_SCANCODE_2: case SDL_SCANCODE_KP_2:
+                    ide_set_paint_color(s, 2); break;
+                case SDL_SCANCODE_3: case SDL_SCANCODE_KP_3:
+                    ide_set_paint_color(s, 3); break;
 
                 default: break;
                 }

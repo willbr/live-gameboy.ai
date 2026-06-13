@@ -223,8 +223,34 @@ void ide_panel_rect(IdePanel panel, int *x, int *y, int *w, int *h) {
 #define VRAM_TILE_COLS   16  /* columns of tiles in VRAM viewer */
 #define VRAM_TILE_SCALE   1  /* 1:1 pixels, gap of 1 between tiles */
 
+/* Color palette swatches in the TILE editor panel (one per BGP shade 0..3).
+ * swatch_rect is the single source of truth shared by ide_render (draw) and
+ * ide_mouse_paint (hit-test) so clicking a swatch matches what's shown. */
+#define SWATCH_W   16
+#define SWATCH_H   16
+#define SWATCH_GAP 4
+static void swatch_rect(int i, int *x, int *y, int *w, int *h) {
+    int px = 352, py = 320;                 /* PANEL_TILE_EDITOR origin */
+    int base_x = px + 4 + 8 * TILE_EDITOR_ZOOM + 14;  /* right of the 40px tile */
+    int base_y = py + 16;
+    *x = base_x + i * (SWATCH_W + SWATCH_GAP);
+    *y = base_y;
+    *w = SWATCH_W;
+    *h = SWATCH_H;
+}
+
 bool ide_mouse_paint(IdeState *s, int mx, int my) {
     if (!s || !s->live) return false;
+
+    /* Clicking a palette swatch selects the paint color instead of painting. */
+    for (int i = 0; i < 4; i++) {
+        int sx, sy, sw, sh;
+        swatch_rect(i, &sx, &sy, &sw, &sh);
+        if (mx >= sx && mx < sx + sw && my >= sy && my < sy + sh) {
+            ide_set_paint_color(s, i);
+            return true;
+        }
+    }
 
     int px, py, pw, ph;
     ide_panel_rect(PANEL_TILE_EDITOR, &px, &py, &pw, &ph);
@@ -563,6 +589,23 @@ void ide_render(IdeState *s, Canvas *c) {
         }
         /* Outer border around the zoomed tile */
         ui_rect(c, ox - 1, oy - 1, 8 * zoom + 1, 8 * zoom + 1, COL_BORDER);
+
+        /* Color palette: 4 swatches (BGP shades). Active one is highlighted.
+         * Click a swatch (or press 0-3) to choose the paint color. */
+        for (int i = 0; i < 4; i++) {
+            int sx, sy, sw, sh;
+            swatch_rect(i, &sx, &sy, &sw, &sh);
+            ui_fill_rect(c, sx, sy, sw, sh, VRAM_PAL[i]);
+            if (i == s->paint_color)
+                ui_rect(c, sx - 2, sy - 2, sw + 3, sh + 3, COL_HIGHLIGHT);
+            else
+                ui_rect(c, sx - 1, sy - 1, sw + 1, sh + 1, COL_BORDER);
+        }
+        {
+            int lx, ly, lw, lh;
+            swatch_rect(0, &lx, &ly, &lw, &lh);
+            ui_text(c, lx, ly + SWATCH_H + 3, "COLOR", COL_DIM);
+        }
     }
 
     /* -----------------------------------------------------------------------

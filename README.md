@@ -53,12 +53,15 @@ render path), so it can be screenshotted headlessly for CI.
 | Arrow keys | GB D-pad |
 | F5 | Hot reload: patch running code from disk, keep RAM/VRAM state (asm mode) |
 | F8 | Soft reset: re-read source and re-run from Main, clearing state (asm mode) |
-| 0-3 | Set paint colour (0=lightest, 3=darkest) |
+| 0-3 | Set paint colour (0=lightest, 3=darkest); top row or numpad |
 | Esc / Q | Quit |
 
 **Mouse:**
-- Click in the VRAM tile viewer to select a tile into the tile editor.
-- Click in the tile editor to paint a pixel with the current colour.
+- Click a tile in the VRAM viewer to load it into the tile editor.
+- Click a swatch in the tile editor's COLOR palette to choose the paint colour
+  (the active swatch is highlighted; or use keys 0-3).
+- Click a pixel in the zoomed tile to paint it with the current colour. Painting
+  a tile that's in use updates the running screen live (via VRAM provenance).
 
 The live-edit workflow: edit `game.asm` in your editor, press F5 in the IDE,
 watch the running game hot-swap with RAM/VRAM state intact. Use F8 instead when

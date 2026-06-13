@@ -104,7 +104,9 @@ static void test_label_and_ld(void)
     ASSERT_EQ(start->off,  0x0150);
 
     ASSERT_EQ(end->bank, 0);
-    ASSERT_EQ(end->addr, 0x0152);
+    /* With layout padding: End is placed in its own 32-byte slot after Start's
+     * 32-byte slot (0x0150+32=0x0170). */
+    ASSERT_EQ(end->addr, 0x0170);
 
     asm_free(&r);
 }
@@ -118,9 +120,11 @@ static void test_forward_jr(void)
      * Program:
      *   line 1: jr Target   -> 18 xx  where xx = Target - (jr_addr+2)
      *   line 2: nop          -> 0x0152  (1 byte)
-     *   line 3: Target: nop  -> 0x0153
+     *   line 3: Target: nop  -> preamble ends at 0x0153; layout places Target at 0x0160
      *
-     *   jr at 0x0150..0x0151: opcode=0x18, disp=Target-(0x0150+2)=0x0153-0x0152=1
+     *   With layout padding: preamble (jr+nop) = 3 bytes ending at 0x0152.
+     *   Target's preamble end = 0x0153. round_up(0x0153,16) = 0x0160.
+     *   jr disp = 0x0160 - (0x0150+2) = 14 = 0x0E.
      */
     const char *src =
         "    jr Target\n"  /* line 1 */
@@ -133,13 +137,13 @@ static void test_forward_jr(void)
     ASSERT_TRUE(r.ok);
 
     ASSERT_EQ(r.rom[0x0150], 0x18);  /* jr opcode */
-    ASSERT_EQ(r.rom[0x0151], 0x01);  /* displacement +1 */
-    ASSERT_EQ(r.rom[0x0152], 0x00);  /* nop */
-    ASSERT_EQ(r.rom[0x0153], 0x00);  /* nop at Target */
+    ASSERT_EQ(r.rom[0x0151], 0x0E);  /* displacement +14 (Target at 0x0160) */
+    ASSERT_EQ(r.rom[0x0152], 0x00);  /* nop (preamble) */
+    ASSERT_EQ(r.rom[0x0160], 0x00);  /* nop at Target (new address) */
 
     const AsmSymbol *tgt = find_sym(&r, "Target");
     ASSERT_TRUE(tgt != NULL);
-    ASSERT_EQ(tgt->addr, 0x0153);
+    ASSERT_EQ(tgt->addr, 0x0160);
 
     asm_free(&r);
 }
@@ -152,10 +156,12 @@ static void test_forward_jp(void)
     /*
      *   line 1: jp Done      -> C3 lo hi  (3 bytes @ 0x0150)
      *   line 2: ld b, c      -> 41        (1 byte  @ 0x0153)
-     *   line 3: Done:        -> label @ 0x0154
-     *   line 4: ret          -> C9        (1 byte  @ 0x0154)
+     *   line 3: Done:        -> preamble ends at 0x0154; layout places Done at 0x0160
+     *   line 4: ret          -> C9        (1 byte  @ 0x0160)
      *
-     *   jp target = 0x0154 -> C3 54 01
+     *   With layout padding: preamble (jp+ld) = 4 bytes ending at 0x0153.
+     *   Done's preamble end = 0x0154. round_up(0x0154,16) = 0x0160.
+     *   jp target = 0x0160 -> C3 60 01
      */
     const char *src =
         "    jp Done\n"    /* line 1 */
@@ -168,14 +174,15 @@ static void test_forward_jp(void)
     ASSERT_TRUE(r.ok);
 
     ASSERT_EQ(r.rom[0x0150], 0xC3);  /* jp opcode */
-    ASSERT_EQ(r.rom[0x0151], 0x54);  /* Done lo */
+    ASSERT_EQ(r.rom[0x0151], 0x60);  /* Done lo (new addr 0x0160) */
     ASSERT_EQ(r.rom[0x0152], 0x01);  /* Done hi */
-    ASSERT_EQ(r.rom[0x0153], 0x41);  /* ld b,c */
-    ASSERT_EQ(r.rom[0x0154], 0xC9);  /* ret */
+    ASSERT_EQ(r.rom[0x0153], 0x41);  /* ld b,c (preamble unchanged) */
+    ASSERT_EQ(r.rom[0x0154], 0x00);  /* padding (ret moved to Done's slot) */
+    ASSERT_EQ(r.rom[0x0160], 0xC9);  /* ret at Done's new address */
 
     const AsmSymbol *done = find_sym(&r, "Done");
     ASSERT_TRUE(done != NULL);
-    ASSERT_EQ(done->addr, 0x0154);
+    ASSERT_EQ(done->addr, 0x0160);
 
     asm_free(&r);
 }
@@ -384,8 +391,11 @@ static void test_dw_label(void)
     /*
      *   SECTION "x", ROM0
      *   dw Target      -> little-endian addr of Target @ 0x0000
-     *   Target: nop    -> Target at 0x0002
-     *   bytes 0x0000: 02 00
+     *   Target: nop    -> preamble (dw) ends at 0x0002; layout places Target at 0x0010
+     *
+     *   With layout padding: preamble (dw = 2 bytes) ends at 0x0002.
+     *   round_up(0x0002, 16) = 0x0010. Target placed at 0x0010.
+     *   dw Target -> 0x0010 LE: 10 00
      */
     const char *src =
         "    SECTION \"x\", ROM0\n"  /* line 1 */
@@ -396,12 +406,12 @@ static void test_dw_label(void)
     AsmResult r = asm_assemble(src, "test_dw_label.asm");
 
     ASSERT_TRUE(r.ok);
-    ASSERT_EQ(r.rom[0x0000], 0x02);  /* Target lo */
+    ASSERT_EQ(r.rom[0x0000], 0x10);  /* Target lo (new addr 0x0010) */
     ASSERT_EQ(r.rom[0x0001], 0x00);  /* Target hi */
 
     const AsmSymbol *t = find_sym(&r, "Target");
     ASSERT_TRUE(t != NULL);
-    ASSERT_EQ(t->addr, 0x0002);
+    ASSERT_EQ(t->addr, 0x0010);
 
     asm_free(&r);
 }
@@ -424,9 +434,13 @@ static void test_rom_min_size(void)
 static void test_jr_cc(void)
 {
     /*
-     *   jr nz, Fwd   ; 0x0150: 20 01 (disp=+1)
+     *   jr nz, Fwd   ; 0x0150: 20 xx (disp to Fwd)
      *   nop          ; 0x0152: 00
-     *   Fwd: nop     ; 0x0153: 00
+     *   Fwd: nop     ; preamble ends at 0x0153; layout places Fwd at 0x0160
+     *
+     *   With layout: preamble (jr nz + nop) = 3 bytes, Fwd at 0x0153 originally.
+     *   round_up(0x0153, 16) = 0x0160. Fwd placed at 0x0160.
+     *   jr nz disp = 0x0160 - (0x0150+2) = 14 = 0x0E.
      */
     const char *src =
         "    jr nz, Fwd\n"  /* line 1 */
@@ -438,7 +452,7 @@ static void test_jr_cc(void)
 
     ASSERT_TRUE(r.ok);
     ASSERT_EQ(r.rom[0x0150], 0x20);  /* jr nz opcode */
-    ASSERT_EQ(r.rom[0x0151], 0x01);  /* displacement +1 */
+    ASSERT_EQ(r.rom[0x0151], 0x0E);  /* displacement +14 (Fwd at 0x0160) */
 
     asm_free(&r);
 }
@@ -660,18 +674,21 @@ static void test_include(void)
     /* nop from main file */
     ASSERT_EQ(r.rom[0x0150], 0x00);  /* nop */
 
-    /* Included label IncLabel should be at 0x0151 */
+    /* Included label IncLabel: preamble (nop) = 1 byte, originally at 0x0151.
+     * Layout: HWM=0x0151, slot placed at round_up(0x0151,16)=0x0160.
+     * IncLabel.size = 2 (nop+ret), slot_size=32. */
     const AsmSymbol *inc_lbl = find_sym(&r, "IncLabel");
     ASSERT_TRUE(inc_lbl != NULL);
     if (inc_lbl) {
-        ASSERT_EQ(inc_lbl->addr, 0x0151);
+        ASSERT_EQ(inc_lbl->addr, 0x0160);
     }
 
-    /* nop from included file at 0x0151 */
-    ASSERT_EQ(r.rom[0x0151], 0x00);  /* nop from included file */
+    /* nop from included file at 0x0160 (new address) */
+    ASSERT_EQ(r.rom[0x0151], 0x00);  /* padding (IncLabel moved to 0x0160) */
+    ASSERT_EQ(r.rom[0x0160], 0x00);  /* nop at IncLabel's new address */
 
-    /* ret from main file after include */
-    ASSERT_EQ(r.rom[0x0152], 0xC9);  /* ret */
+    /* ret from main file at 0x0161 (inside IncLabel's slot) */
+    ASSERT_EQ(r.rom[0x0161], 0xC9);  /* ret */
 
     asm_free(&r);
     remove(tmpfile);

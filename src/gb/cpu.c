@@ -143,7 +143,7 @@ int gb_step(GB *g) {
     exec(g, op);
 
     /* Temporary references to silence -Werror=unused-function until later tasks consume these */
-    (void)cond; (void)get_rp;
+    (void)cond;
 
     return (int)(g->cycles - start);
 }
@@ -165,6 +165,22 @@ static void exec(GB *g, uint8_t op) {
     if (x == 3 && z == 6) { alu(g, y, fetch8(g)); return; }  /* d8 forms C6,CE,D6,DE,E6,EE,F6,FE */
     if (x == 0 && z == 4) { set_r(g, y, inc8(c, get_r(g, y))); return; }  /* INC r */
     if (x == 0 && z == 5) { set_r(g, y, dec8(c, get_r(g, y))); return; }  /* DEC r */
+    if (x == 0 && z == 1 && (op & 8)) {                  /* ADD HL,rp: 09 19 29 39 */
+        int p = (op >> 4) & 3;
+        uint16_t hl = HL(c), v = get_rp(c, p);
+        internal(g);
+        set_flag(c, FN, false);
+        set_flag(c, FH, (hl & 0x0FFF) + (v & 0x0FFF) > 0x0FFF);
+        set_flag(c, FC, (uint32_t)hl + v > 0xFFFF);
+        set_HL(c, hl + v);
+        return;
+    }
+    if (x == 0 && z == 3) {                              /* INC/DEC rp: 03 13 23 33 / 0B 1B 2B 3B */
+        int p = (op >> 4) & 3;
+        internal(g);
+        set_rp(c, p, get_rp(c, p) + ((op & 8) ? -1 : 1));
+        return;
+    }
 
     switch (op) {
     case 0x00: break;
@@ -199,6 +215,11 @@ static void exec(GB *g, uint8_t op) {
     case 0x08: { uint16_t a = fetch16(g);
                  wr(g, a, (uint8_t)c->sp); wr(g, a + 1, c->sp >> 8); break; }
     case 0xF9: internal(g); c->sp = HL(c); break;
+    case 0xE8: { int8_t e = (int8_t)fetch8(g); internal(g); internal(g);
+                 set_flag(c, FZ, false); set_flag(c, FN, false);
+                 set_flag(c, FH, (c->sp & 0x0F) + (e & 0x0F) > 0x0F);
+                 set_flag(c, FC, (c->sp & 0xFF) + (e & 0xFF) > 0xFF);
+                 c->sp = (uint16_t)(c->sp + e); break; }
     case 0xF8: { int8_t e = (int8_t)fetch8(g); internal(g);
                  uint16_t r = (uint16_t)(c->sp + e);
                  set_flag(c, FZ, false); set_flag(c, FN, false);

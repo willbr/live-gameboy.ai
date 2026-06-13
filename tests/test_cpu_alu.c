@@ -73,5 +73,37 @@ int main(void) {
         ASSERT_EQ(FLAGS(g), 0xB0);
         gb_free(g);
     }
+    {   /* ADD HL,rr: 8 cycles; Z preserved, N=0, H/C from bit 11/15 */
+        GB *g = gb_with((uint8_t[]){
+            0x21, 0xFF, 0x8F,   /* LD HL,0x8FFF */
+            0x01, 0x01, 0x00,   /* LD BC,0x0001 */
+            0x09,               /* ADD HL,BC -> 0x9000, H set */
+        }, 7);
+        g->cpu.f = 0x80;  /* pre-set Z to check preservation */
+        gb_step(g); gb_step(g);
+        ASSERT_EQ(gb_step(g), 8);
+        ASSERT_EQ((g->cpu.h << 8) | g->cpu.l, 0x9000);
+        ASSERT_EQ(g->cpu.f & 0xF0, 0xA0);   /* Z preserved, H set, N/C clear */
+        gb_free(g);
+    }
+    {   /* INC rr / DEC rr: 8 cycles, no flags */
+        GB *g = gb_with((uint8_t[]){0x01, 0xFF, 0xFF, 0x03, 0x0B}, 5);
+        g->cpu.f = 0xF0;
+        gb_step(g);
+        ASSERT_EQ(gb_step(g), 8);
+        ASSERT_EQ((g->cpu.b << 8) | g->cpu.c, 0x0000);
+        ASSERT_EQ(g->cpu.f & 0xF0, 0xF0);   /* untouched */
+        ASSERT_EQ(gb_step(g), 8);
+        ASSERT_EQ((g->cpu.b << 8) | g->cpu.c, 0xFFFF);
+        gb_free(g);
+    }
+    {   /* ADD SP,e8: 16 cycles, Z=N=0, H/C from low byte */
+        GB *g = gb_with((uint8_t[]){0x31, 0xF8, 0xFF, 0xE8, 0x08}, 5); /* SP=FFF8; ADD SP,8 */
+        gb_step(g);
+        ASSERT_EQ(gb_step(g), 16);
+        ASSERT_EQ(g->cpu.sp, 0x0000);
+        ASSERT_EQ(g->cpu.f & 0xF0, 0x30);   /* H C (F8+08 carries both) */
+        gb_free(g);
+    }
     TEST_MAIN_END();
 }

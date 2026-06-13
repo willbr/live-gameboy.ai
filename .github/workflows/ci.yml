@@ -18,6 +18,8 @@ jobs:
           make acid2
       - name: blargg sound (registers)
         run: make sound
+      - name: assembler demo (gbasm CLI end-to-end)
+        run: make gbasm && make asm-demo
       - name: install SDL3
         run: sudo apt-get update && sudo apt-get install -y libsdl3-dev zlib1g-dev || echo "SDL3 apt package unavailable; skipping shell build"
       - name: build shell + headless screenshot

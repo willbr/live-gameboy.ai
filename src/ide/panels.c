@@ -387,8 +387,29 @@ void panel_oam(Canvas *c, struct GB *gb) {
 }
 
 void panel_tilemap(Canvas *c, struct GB *gb) {
-    int px, py, pw, ph;
-    ide_panel_rect(PANEL_TILEMAP, &px, &py, &pw, &ph);
-    draw_panel(c, px, py, pw, ph, "TILEMAP");
-    (void)gb;
+    int x, y, w, h;
+    ide_panel_rect(PANEL_TILEMAP, &x, &y, &w, &h);
+    ui_rect(c, x, y, w, h, 0x60A060FF);
+    ui_text(c, x + 4, y + 2, "BG MAP", 0xA0FFA0FF);
+
+    static const uint32_t GRAY[4] = {0xFFFFFFFF, 0xAAAAAAFF, 0x555555FF, 0x000000FF};
+    /* LCDC bit3 selects 0x9800 vs 0x9C00; bit4 selects tile data base. */
+    int map = (gb->lcdc & 0x08) ? 0x1C00 : 0x1800;  /* VRAM offset */
+    bool signed_idx = !(gb->lcdc & 0x10);
+    int ox = x + 4, oy = y + 12;
+    /* 32x32 tiles, draw each as a 4x4 block (128x128 px), then SCX/SCY box. */
+    int cell = 4;
+    for (int ty = 0; ty < 32; ty++) {
+        for (int tx = 0; tx < 32; tx++) {
+            uint8_t idx = gb->vram[map + ty * 32 + tx];
+            /* tile-data base: 0x8000 (unsigned) or 0x9000 (signed) -> VRAM tile index */
+            int t = signed_idx ? 256 + (int8_t)idx : idx;
+            /* cheap thumbnail: shade of the tile's top-left pixel */
+            uint8_t shade = tile_pixel(gb, t, 0, 0);
+            ui_fill_rect(c, ox + tx * cell, oy + ty * cell, cell, cell, GRAY[shade]);
+        }
+    }
+    /* viewport rectangle (SCX/SCY in tile-space, scaled by cell/8) */
+    int vx = ox + (gb->scx / 8) * cell, vy = oy + (gb->scy / 8) * cell;
+    ui_rect(c, vx, vy, 20 * cell, 18 * cell, 0xFFD700FF);
 }

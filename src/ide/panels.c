@@ -288,6 +288,25 @@ void panel_mem_hex(Canvas *c, struct GB *gb, uint16_t mem_base) {
             pos += snprintf(buf + pos, sizeof(buf) - (size_t)pos, "  |%s|", ascii);
 
         ui_text(c, tx, ty, buf, COL_TEXT);
+
+        /* Watchpoint markers: draw a 1px underline under each watched byte cell.
+         * Label "%04X:" = 5 chars = 40px; each byte entry " %02X" = 3 chars = 24px.
+         * So byte b's hex starts at tx + (5 + b*3)*8 pixels.  Cell width = 16px
+         * (the two hex-digit chars, skipping the leading space). */
+        if (gb->dbg) {
+            for (int b = 0; b < bytes_per_row; b++) {
+                uint16_t addr = (uint16_t)(base_addr + (uint16_t)b);
+                for (int wi = 0; wi < gb->dbg->wp_count; wi++) {
+                    if (gb->dbg->wp[wi].addr == addr) {
+                        int cell_x = tx + (5 + b * 3) * 8 + 8; /* +8: skip the space char */
+                        int cell_y = ty;
+                        ui_fill_rect(c, cell_x, cell_y + 8, 16, 1, 0xFF8080FF);
+                        break;
+                    }
+                }
+            }
+        }
+
         ty += line_h;
     }
 }
@@ -310,10 +329,27 @@ void panel_status(Canvas *c, int frame_counter, const char *status) {
  * --------------------------------------------------------------------- */
 
 void panel_exec(Canvas *c, IdeState *s) {
-    int px, py, pw, ph;
-    ide_panel_rect(PANEL_EXEC, &px, &py, &pw, &ph);
-    draw_panel(c, px, py, pw, ph, "EXEC");
-    (void)s;
+    int x, y, w, h;
+    ide_panel_rect(PANEL_EXEC, &x, &y, &w, &h);
+    GB *gb = ide_gb(s);
+    ui_rect(c, x, y, w, h, 0x60A060FF);
+
+    const char *mode = ide_exec_mode(s) == EXEC_PAUSED ? "PAUSED" : "RUNNING";
+    char line[64];
+    snprintf(line, sizeof line, "EXEC: %s  PC=%04X", mode, gb->cpu.pc);
+    ui_text(c, x + 4, y + 2, line, 0xFFD700FF);
+
+    GbDebug *d = gb->dbg;
+    if (d && d->hit) {
+        const char *k = d->hit_kind == DBG_BREAKPOINT  ? "BP"
+                      : d->hit_kind == DBG_WATCH_READ  ? "WR"
+                      : d->hit_kind == DBG_WATCH_WRITE ? "WW" : "?";
+        snprintf(line, sizeof line, "BREAK %s @%04X (pc %04X)", k, d->hit_addr, d->hit_pc);
+        ui_text(c, x + 4, y + 12, line, 0xFF8080FF);
+    }
+    snprintf(line, sizeof line, "BP:%d WP:%d", d ? d->bp_count : 0, d ? d->wp_count : 0);
+    ui_text(c, x + 4, y + 22, line, 0xC0E0C0FF);
+    ui_text(c, x + 4, y + 40, "SPC run/pause F7 ins F6 line F9 frm", 0x80A080FF);
 }
 
 void panel_disasm(Canvas *c, IdeState *s) {

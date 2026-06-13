@@ -53,6 +53,7 @@ static bool tok_eq_str(const AsmToken *t, const char *s);
 #define PROV_ASSET    (-2)   /* INCBIN asset byte */
 
 /* Cartridge header layout */
+#define HDR_ENTRY_ADDR 0x0100u
 #define HDR_LOGO_ADDR  0x0104u
 #define HDR_TITLE_ADDR 0x0134u
 #define HDR_TYPE_ADDR  0x0147u
@@ -1784,9 +1785,9 @@ AsmResult asm_assemble_mem(const char *src, const char *filename,
         for (int i = 0; i < st.count; i++) {
             if (strcmp(st.syms[i].name, "Main") == 0 && st.syms[i].defined
                 && st.syms[i].bank == 0 && st.syms[i].addr < 0x4000u) {
-                r.rom[0x0100] = 0xC3u;                              /* JP nn */
-                r.rom[0x0101] = (uint8_t)(st.syms[i].addr & 0xFFu);
-                r.rom[0x0102] = (uint8_t)((st.syms[i].addr >> 8) & 0xFFu);
+                r.rom[HDR_ENTRY_ADDR]     = 0xC3u;                  /* JP nn */
+                r.rom[HDR_ENTRY_ADDR + 1] = (uint8_t)(st.syms[i].addr & 0xFFu);
+                r.rom[HDR_ENTRY_ADDR + 2] = (uint8_t)((st.syms[i].addr >> 8) & 0xFFu);
                 break;
             }
         }

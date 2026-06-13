@@ -155,8 +155,117 @@ DrawSprites:
     ld ($C009), a           ; paddle-right X (8 px right)
     ret
 
-; ====================== GAMEPLAY (stubs, filled in Task 7) ======================
+; ====================== GAMEPLAY ======================
 ReadInput:
+    ld a, $20                ; directions
+    ldh ($00), a
+    ldh a, ($00)
+    ldh a, ($00)
+    bit 1, a                 ; Left
+    jr nz, .nl
+    ld a, ($C0A4)
+    cp 2
+    jr c, .nl
+    dec a
+    dec a
+    ld ($C0A4), a
+.nl:
+    ld a, $20
+    ldh ($00), a
+    ldh a, ($00)
+    ldh a, ($00)
+    bit 0, a                 ; Right
+    jr nz, .nr
+    ld a, ($C0A4)
+    cp 144
+    jr nc, .nr
+    inc a
+    inc a
+    ld ($C0A4), a
+.nr:
+    ld a, $30
+    ldh ($00), a
     ret
+
 UpdateBall:
+    ; X axis
+    ld a, ($C0A2)
+    ld b, a
+    ld a, ($C0A0)
+    add a, b
+    ld ($C0A0), a
+    cp 8
+    jr nc, .xhi
+    ld a, 1
+    ld ($C0A2), a
+    jr .yax
+.xhi:
+    cp 152
+    jr c, .yax
+    ld a, $FF
+    ld ($C0A2), a
+.yax:
+    ; Y axis
+    ld a, ($C0A3)
+    ld b, a
+    ld a, ($C0A1)
+    add a, b
+    ld ($C0A1), a
+    cp 8
+    jr nc, .ylo
+    ld a, 1
+    ld ($C0A3), a
+    jr .brick
+.ylo:
+    cp 140
+    jr c, .brick
+    ld a, $FF
+    ld ($C0A3), a
+.brick:
+    call .BrickHit
+    ret
+
+; map ball (pixel) -> tilemap cell; if it's a brick (tile 3), clear it
+; and reflect DY. col = ballX/8, row = ballY/8.
+.BrickHit:
+    ld a, ($C0A1)           ; ballY
+    srl a
+    srl a
+    srl a                   ; /8 -> row
+    ld d, a                 ; row
+    ld a, ($C0A0)           ; ballX
+    srl a
+    srl a
+    srl a                   ; /8 -> col
+    ld e, a                 ; col
+    ; HL = $9800 + row*32 + col
+    ld a, d
+    ld l, a
+    ld h, 0
+    add hl, hl
+    add hl, hl
+    add hl, hl
+    add hl, hl
+    add hl, hl              ; *32
+    ld a, e
+    ld c, a
+    ld b, 0
+    add hl, bc
+    ld bc, $9800
+    add hl, bc
+    ld a, (hl)
+    cp 3                    ; brick?
+    ret nz
+    xor a
+    ld (hl), a             ; clear brick cell (live tilemap edit by the game)
+    ; reflect DY: going up ($FF) -> down (1); going down (1) -> up ($FF)
+    ld a, ($C0A3)
+    cp 1
+    jr z, .setUp
+    ld a, 1
+    ld ($C0A3), a
+    ret
+.setUp:
+    ld a, $FF
+    ld ($C0A3), a
     ret

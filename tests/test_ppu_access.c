@@ -52,5 +52,16 @@ int main(void) {
         ASSERT_EQ(gb_ppu_read(g, 0xFF46), 0xC0);   /* register reads back source hi */
         gb_free(g);
     }
+    {   /* OAM DMA from VRAM during mode 3 copies real data, not PPU-blocked 0xFF */
+        GB *g = fresh();                  /* LCD on */
+        for (int i = 0; i < 0xA0; i++) g->vram[i] = (uint8_t)(i ^ 0x3C);  /* seed VRAM directly */
+        gb_ppu_tick(g, 80);               /* enter mode 3 (VRAM blocked on CPU bus) */
+        ASSERT_EQ(g->ppu_mode, 3);
+        ASSERT_EQ(gb_read8(g, 0x8000), 0xFF);     /* confirm CPU VRAM read is blocked */
+        gb_write8(g, 0xFF46, 0x80);       /* DMA from 0x8000 (VRAM) */
+        for (int i = 0; i < 0xA0; i++)
+            ASSERT_EQ(g->oam[i], (uint8_t)(i ^ 0x3C));   /* DMA bypassed the block */
+        gb_free(g);
+    }
     TEST_MAIN_END();
 }

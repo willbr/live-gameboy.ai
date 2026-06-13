@@ -18,7 +18,7 @@ void gb_ppu_reset(GB *g) {
     g->wy = 0; g->wx = 0;
     g->ppu_mode = MODE_OAM; g->ppu_dot = 0; g->stat_line = false;
     g->win_line = 0; g->frame_ready = false;
-    g->fx = 0; g->discard = 0; g->fetch_step = 0; g->fetch_x = 0; g->bg_fifo_n = 0;
+    g->fx = 0; g->discard = 0; g->fetch_x = 0; g->bg_fifo_n = 0;
     g->window_active = false; g->oam_dma_src = 0;
     memset(g->framebuffer, 0, sizeof g->framebuffer);
 }
@@ -169,7 +169,6 @@ static void fetch_bg_row(GB *g, int map_base, int tx, int ty, int py,
 static void render_begin_line(GB *g) {
     g->fx = 0;
     g->bg_fifo_n = 0;
-    g->fetch_step = 0;
     g->fetch_x = 0;
     g->window_active = false;
     g->win_started = false;
@@ -237,7 +236,7 @@ static void render_step(GB *g) {
     memmove(g->bg_fifo_c, g->bg_fifo_c + 1, (size_t)(--g->bg_fifo_n));
 
     if (!(g->lcdc & 0x01)) color = 0;     /* BG/window disabled -> color 0 */
-    g->bg_color_at = color;               /* pre-palette BG color for priority test */
+    uint8_t bg_color = color;             /* pre-palette BG color for priority test */
     uint8_t shade = pal_shade(g->bgp, color);
 
     /* sprites */
@@ -270,7 +269,7 @@ static void render_step(GB *g) {
             }
         }
         if (best >= 0) {
-            bool behind = best_prio && (g->bg_color_at != 0);
+            bool behind = best_prio && (bg_color != 0);
             if (!behind) shade = pal_shade(best_pal, best_color);
         }
     }
@@ -283,6 +282,12 @@ static void render_step(GB *g) {
 static void oam_dma(GB *g, uint8_t hi) {
     g->oam_dma_src = hi;
     uint16_t src = (uint16_t)hi << 8;
-    for (int i = 0; i < 0xA0; i++)
-        g->oam[i] = gb_read8(g, (uint16_t)(src + i));   /* simplified: instantaneous copy */
+    for (int i = 0; i < 0xA0; i++) {
+        uint16_t a = (uint16_t)(src + i);
+        /* DMA has independent bus access — read VRAM directly so a DMA-from-VRAM
+           during Mode 3 copies real data, not the PPU-blocked 0xFF. Other regions
+           go through gb_read8 to respect MBC banking. (Simplified: instantaneous.) */
+        g->oam[i] = (a >= 0x8000 && a < 0xA000) ? g->vram[a - 0x8000]
+                                                : gb_read8(g, a);
+    }
 }

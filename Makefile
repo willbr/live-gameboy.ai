@@ -13,6 +13,10 @@ ASM_OBJ = $(ASM_SRC:src/asm/%.c=$(BUILD)/asm/%.o)
 LIVE_SRC = $(wildcard src/live/*.c)
 LIVE_OBJ = $(LIVE_SRC:src/live/%.c=$(BUILD)/live/%.o)
 
+# IDE UI objects — exclude main.c (doesn't exist yet; filter-out for safety)
+IDE_SRC = $(filter-out src/ide/main.c,$(wildcard src/ide/*.c))
+IDE_OBJ = $(IDE_SRC:src/ide/%.c=$(BUILD)/ide/%.o)
+
 TESTS   = $(wildcard tests/test_*.c)
 TESTBIN = $(TESTS:tests/%.c=$(BUILD)/%)
 
@@ -27,10 +31,13 @@ $(BUILD)/asm/%.o: src/asm/%.c src/asm/asm.h | $(BUILD)/asm
 $(BUILD)/live/%.o: src/live/%.c src/live/live.h | $(BUILD)/live
 	$(CC) $(CFLAGS) -c $< -o $@
 
-$(BUILD)/%: tests/%.c $(GB_OBJ) $(ASM_OBJ) $(LIVE_OBJ) tests/test.h | $(BUILD)
-	$(CC) $(CFLAGS) $< $(GB_OBJ) $(ASM_OBJ) $(LIVE_OBJ) -lz -o $@
+$(BUILD)/ide/%.o: src/ide/%.c src/ide/ui.h | $(BUILD)/ide
+	$(CC) $(CFLAGS) -c $< -o $@
 
-$(BUILD) $(BUILD)/gb $(BUILD)/asm $(BUILD)/live:
+$(BUILD)/%: tests/%.c $(GB_OBJ) $(ASM_OBJ) $(LIVE_OBJ) $(IDE_OBJ) tests/test.h | $(BUILD)
+	$(CC) $(CFLAGS) $< $(GB_OBJ) $(ASM_OBJ) $(LIVE_OBJ) $(IDE_OBJ) -lz -o $@
+
+$(BUILD) $(BUILD)/gb $(BUILD)/asm $(BUILD)/live $(BUILD)/ide:
 	mkdir -p $@
 
 test: $(TESTBIN)

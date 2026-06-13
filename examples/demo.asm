@@ -1,8 +1,8 @@
 ; demo.asm — scrolling background demo for live-gameboy IDE
 ;
-; Displays a recognisable striped tile on the background, then in the
-; main loop increments a WRAM counter and writes it to SCX so the
-; background visibly scrolls every frame.
+; Displays a horizontally-striped tile across the background, then once
+; per frame (synced to VBlank) increments a WRAM counter and writes it
+; to SCY so the stripes visibly scroll UP the screen.
 ;
 ; Syntax: RGBDS-inspired SM83 as understood by gbasm / asm_assemble().
 ;   - (addr) for memory indirect
@@ -40,18 +40,20 @@ Main:
     jr nz, .copyloop
 
     ; ---------------------------------------------------------------
-    ; Fill the top two rows of tilemap ($9800..$9800+64) with tile 0
+    ; Fill the WHOLE BG tilemap ($9800..$9BFF, 1024 bytes) with tile 0.
+    ; NOTE: A is reset to 0 INSIDE the loop because the bc==0 test below
+    ; ("ld a,b / or c") clobbers A — writing the tile index from A each
+    ; iteration must therefore happen after a fresh "xor a".
     ; ---------------------------------------------------------------
     ld hl, $9800
-    ld bc, $0040
-    xor a
+    ld bc, $0400
 .fillmap:
+    xor a                 ; tile index 0 (also cleared every iteration)
     ld (hl+), a
     dec bc
     ld a, b
     or c
     jr nz, .fillmap
-    xor a                 ; restore A=0 for tile index
 
     ; ---------------------------------------------------------------
     ; Set BGP = $E4  (color 0=white, 1=lgrey, 2=dgrey, 3=black)
@@ -72,13 +74,28 @@ Main:
     ld ($C000), a
 
     ; ---------------------------------------------------------------
-    ; Main loop: increment counter, write to SCX, loop forever
+    ; Main loop: once per frame, increment counter and write it to SCY
+    ; so the horizontal stripes visibly scroll UP the screen.
+    ;   - SCY (vertical scroll) IS visible on horizontal stripes
+    ;     (SCX would be invisible: the pattern is constant along X).
+    ;   - We wait for VBlank (LY == 144) each iteration so the scroll
+    ;     advances ~60 px/sec instead of cycling 0..255 in microseconds.
     ; ---------------------------------------------------------------
 .loop:
+.waitvbl:
+    ldh a, ($44)          ; LY
+    cp $90                ; 144 = first VBlank line
+    jr nz, .waitvbl       ; spin until LY == 144
+
     ld a, ($C000)
     inc a
     ld ($C000), a
-    ldh ($43), a          ; SCX = counter -> background scrolls
+    ldh ($42), a          ; SCY = counter -> stripes scroll vertically
+
+.waitend:
+    ldh a, ($44)          ; wait for VBlank to end so we update once per frame
+    cp $90
+    jr z, .waitend
     jr .loop
 
     ; ---------------------------------------------------------------

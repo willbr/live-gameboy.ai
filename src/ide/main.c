@@ -134,9 +134,16 @@ static int run_interactive(const char *path) {
                     break;
 
                 case SDL_SCANCODE_F5:
-                    /* Reload source from disk (asm mode only) */
+                    /* Hot reload: patch running code, keep state (asm mode only) */
                     if (ide_is_asm(s))
                         ide_reload_from_file(s, path);
+                    break;
+
+                case SDL_SCANCODE_F8:
+                    /* Soft reset: re-run from Main, clearing RAM/VRAM. Picks up
+                       init-time changes that a hot reload won't (asm mode only). */
+                    if (ide_is_asm(s))
+                        ide_soft_reset_from_file(s, path);
                     break;
 
                 /* Paint colour 0-3 */

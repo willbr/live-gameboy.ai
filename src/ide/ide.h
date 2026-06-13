@@ -95,6 +95,12 @@ int  ide_select_tile_at(IdeState *s, int mx, int my);
  * Returns true on success. */
 bool ide_reload_from_file(IdeState *s, const char *path);
 
+/* ide_soft_reset_from_file — re-read the source file and live_soft_reload:
+ * clears RAM/VRAM and re-runs from Main (picks up init-time changes that a
+ * hot reload won't, since hot reload keeps the running state). Returns true
+ * on success. Sets ide_status() to a summary. */
+bool ide_soft_reset_from_file(IdeState *s, const char *path);
+
 /* ide_is_asm — return true if the session was opened from a .asm file
  * (i.e. has a live session and source text). */
 bool ide_is_asm(IdeState *s);

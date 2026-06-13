@@ -51,7 +51,8 @@ render path), so it can be screenshotted headlessly for CI.
 | Enter | GB Start |
 | RShift | GB Select |
 | Arrow keys | GB D-pad |
-| F5 | Reload source from disk and hot-swap (asm mode) |
+| F5 | Hot reload: patch running code from disk, keep RAM/VRAM state (asm mode) |
+| F8 | Soft reset: re-read source and re-run from Main, clearing state (asm mode) |
 | 0-3 | Set paint colour (0=lightest, 3=darkest) |
 | Esc / Q | Quit |
 
@@ -60,7 +61,9 @@ render path), so it can be screenshotted headlessly for CI.
 - Click in the tile editor to paint a pixel with the current colour.
 
 The live-edit workflow: edit `game.asm` in your editor, press F5 in the IDE,
-watch the running game hot-swap with RAM/VRAM state intact.
+watch the running game hot-swap with RAM/VRAM state intact. Use F8 instead when
+a change is in init/setup code (e.g. tile or tilemap setup) that only runs once
+at startup — F5 keeps running state, so it won't re-run that code.
 
 ## Assemble
 

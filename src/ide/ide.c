@@ -321,6 +321,24 @@ bool ide_reload_from_file(IdeState *s, const char *path) {
     return !refused;
 }
 
+bool ide_soft_reset_from_file(IdeState *s, const char *path) {
+    if (!s || !s->live || !path) return false;
+
+    char *new_src = read_file(path);
+    if (!new_src) {
+        snprintf(s->status, sizeof(s->status), "Soft reset error: cannot read %s", path);
+        return false;
+    }
+
+    /* Re-run from Main with a fresh reset: clears RAM/VRAM and re-executes
+       init code (unlike F5/live_reload, which keeps running state). Use this
+       to pick up init-time changes (tile/tilemap setup, etc.). */
+    live_soft_reload(s->live, new_src);
+    free(new_src);
+    snprintf(s->status, sizeof(s->status), "Soft reset: re-ran from Main");
+    return true;
+}
+
 /* -------------------------------------------------------------------------
  * Panel colors
  * ------------------------------------------------------------------------- */

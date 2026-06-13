@@ -60,8 +60,9 @@ render path), so it can be screenshotted headlessly for CI.
 - Click a tile in the VRAM viewer to load it into the tile editor.
 - Click a swatch in the tile editor's COLOR palette to choose the paint colour
   (the active swatch is highlighted; or use keys 0-3).
-- Click a pixel in the zoomed tile to paint it with the current colour. Painting
-  a tile that's in use updates the running screen live (via VRAM provenance).
+- Click a pixel in the zoomed tile to paint it with the current colour, or
+  **click and drag to brush** a stroke. Painting a tile that's in use updates
+  the running screen live (via VRAM provenance).
 
 The live-edit workflow: edit `game.asm` in your editor, press F5 in the IDE,
 watch the running game hot-swap with RAM/VRAM state intact. Use F8 instead when

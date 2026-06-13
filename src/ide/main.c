@@ -175,10 +175,24 @@ static int run_interactive(const char *path) {
                         my >= vr_y && my < vr_y + vr_h) {
                         ide_select_tile_at(s, mx, my);
                     }
-                    /* Tile editor panel → paint pixel */
+                    /* Tile editor panel → select colour swatch / paint pixel */
                     else if (mx >= te_x && mx < te_x + te_w &&
                              my >= te_y && my < te_y + te_h) {
                         ide_mouse_paint(s, mx, my);
+                    }
+                }
+                break;
+
+            case SDL_EVENT_MOUSE_MOTION:
+                /* Brush: paint continuously while the left button is held and
+                 * the cursor is over the tile editor. Uses ide_paint_at so a
+                 * drag across the colour swatches doesn't change the colour. */
+                if (ev.motion.state & SDL_BUTTON_LMASK) {
+                    int mx = (int)ev.motion.x;
+                    int my = (int)ev.motion.y;
+                    if (mx >= te_x && mx < te_x + te_w &&
+                        my >= te_y && my < te_y + te_h) {
+                        ide_paint_at(s, mx, my);
                     }
                 }
                 break;

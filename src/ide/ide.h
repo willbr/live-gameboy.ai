@@ -84,6 +84,12 @@ int  ide_paint_color(IdeState *s);
  * Returns true on a successful paint, false if out-of-bounds or live==NULL. */
 bool ide_mouse_paint(IdeState *s, int mx, int my);
 
+/* ide_paint_at — paint a single pixel at canvas-space (mx,my) with the current
+ * color, WITHOUT the colour-swatch check. Use for click-and-drag brush strokes
+ * (so dragging over the palette doesn't change colour mid-stroke).
+ * Returns true on a successful paint, false if outside the zoomed tile. */
+bool ide_paint_at(IdeState *s, int mx, int my);
+
 /* ide_select_tile_at — given a canvas-space mouse position inside the VRAM
  * tiles panel, compute the tile index and call ide_select_tile.
  * Returns the selected tile index, or -1 if (mx,my) is outside the panel. */

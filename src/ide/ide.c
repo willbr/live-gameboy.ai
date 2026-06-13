@@ -252,6 +252,12 @@ bool ide_mouse_paint(IdeState *s, int mx, int my) {
         }
     }
 
+    return ide_paint_at(s, mx, my);
+}
+
+bool ide_paint_at(IdeState *s, int mx, int my) {
+    if (!s || !s->live) return false;
+
     int px, py, pw, ph;
     ide_panel_rect(PANEL_TILE_EDITOR, &px, &py, &pw, &ph);
 

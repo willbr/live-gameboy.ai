@@ -74,6 +74,8 @@ typedef struct GB {
     int     audio_head, audio_tail;
     int     audio_sample_rate;
     double  audio_accum;        /* cycles toward next output sample */
+    float   audio_cap_l, audio_cap_r;  /* DC-blocking high-pass filter state */
+    double  audio_hpf_charge;          /* per-sample HPF charge factor */
 
     /* serial (test-ROM result channel) */
     char serial_buf[8192];

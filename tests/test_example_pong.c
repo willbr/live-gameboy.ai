@@ -121,6 +121,49 @@ static void test_pong_audio_nonsilent(void) {
     gb_free(gb); asm_free(&r);
 }
 
+/* After an SFX plays and its channel's length counter disables it, the output
+ * must settle back to SILENCE — not stick at a DC offset (the bug that caused
+ * a constant buzz in the IDE). Guards the mixer's DC-blocking high-pass filter:
+ * a DAC-on-but-silent channel emits dac_float(0) = -1.0, which without the
+ * filter would be a permanent audible offset. */
+static void test_pong_audio_settles_silent(void) {
+    AsmResult r = ex_assemble("examples/pong.asm");
+    ASSERT_TRUE(r.ok);
+    GB *gb = gb_new();
+    gb_load_rom(gb, r.rom, r.rom_size);
+    gb_reset(gb);
+    float buf[4096];
+
+    /* Phase 1: ~80 frames — a wall/paddle bounce fires a blip in this window. */
+    float blip_peak = 0.0f;
+    for (int f = 0; f < 80; f++) {
+        gb->frame_ready = false; int guard = 0;
+        while (!gb->frame_ready && guard++ < 2000000) gb_step(gb);
+        int n;
+        while ((n = gb_audio_read(gb, buf, 4096)) > 0)
+            for (int i = 0; i < n; i++) {
+                float a = buf[i] < 0 ? -buf[i] : buf[i];
+                if (a > blip_peak) blip_peak = a;
+            }
+    }
+    ASSERT_TRUE(blip_peak > 0.05f);    /* a blip actually played */
+
+    /* Phase 2: a quiet window (no new bounce here) — output must decay to ~0. */
+    float quiet_peak = 0.0f;
+    for (int f = 0; f < 25; f++) {
+        gb->frame_ready = false; int guard = 0;
+        while (!gb->frame_ready && guard++ < 2000000) gb_step(gb);
+        int n;
+        while ((n = gb_audio_read(gb, buf, 4096)) > 0)
+            for (int i = 0; i < n; i++) {
+                float a = buf[i] < 0 ? -buf[i] : buf[i];
+                if (a > quiet_peak) quiet_peak = a;
+            }
+    }
+    ASSERT_TRUE(quiet_peak < 0.02f);   /* no DC offset / buzz after the blip */
+    gb_free(gb); asm_free(&r);
+}
+
 int main(void) {
     test_pong_boots();
     test_pong_ball_moves();
@@ -129,5 +172,6 @@ int main(void) {
     test_pong_apu_on();
     test_pong_sfx_fires();
     test_pong_audio_nonsilent();
+    test_pong_audio_settles_silent();
     TEST_MAIN_END();
 }

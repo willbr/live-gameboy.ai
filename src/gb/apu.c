@@ -1,5 +1,6 @@
 #include "gb.h"
 #include <string.h>
+#include <math.h>
 
 /* Read-back OR masks for FF10-FF2F (indexed by addr - 0xFF10).
    Wave RAM FF30-FF3F => index 0x20-0x2F => mask 0x00 (fully readable).
@@ -418,10 +419,17 @@ void gb_apu_reset(GB *gb) {
     gb->audio_tail = 0;
     gb->audio_accum = 0.0;
     gb->audio_sample_rate = 48000;
+    gb->audio_cap_l = 0.0f;
+    gb->audio_cap_r = 0.0f;
+    /* DC-blocking high-pass: charge factor for the configured sample rate.
+       0.999958 is the per-cycle DMG capacitor constant; raise it to
+       (cycles per output sample) to apply once per emitted sample. */
+    gb->audio_hpf_charge = pow(0.999958, 4194304.0 / (double)gb->audio_sample_rate);
 }
 
 void gb_apu_set_sample_rate(GB *gb, int hz) {
     gb->audio_sample_rate = hz;
+    gb->audio_hpf_charge = pow(0.999958, 4194304.0 / (double)(hz > 0 ? hz : 1));
 }
 
 uint8_t gb_apu_read(GB *gb, uint16_t addr) {
@@ -623,6 +631,17 @@ void gb_apu_tick(GB *gb, int tcycles) {
             /* Compute stereo (L, R) sample pair from NR50/NR51 + channel DACs */
             float left, right;
             apu_mix(gb, &left, &right);
+
+            /* DC-blocking high-pass filter (models the DMG's AC-coupled
+               output). A DAC that is enabled but silent sits at -1.0; without
+               this filter that becomes a constant audible offset/buzz once a
+               channel's length counter disables it. Steady DC decays to 0. */
+            float hpf_l = left  - gb->audio_cap_l;
+            gb->audio_cap_l = left  - hpf_l * (float)gb->audio_hpf_charge;
+            float hpf_r = right - gb->audio_cap_r;
+            gb->audio_cap_r = right - hpf_r * (float)gb->audio_hpf_charge;
+            left  = hpf_l;
+            right = hpf_r;
 
             int next_head = (gb->audio_head + 2) & (8192 - 1);
             if (next_head != gb->audio_tail) {

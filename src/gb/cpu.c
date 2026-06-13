@@ -292,7 +292,7 @@ static void exec(GB *g, uint8_t op) {
                set_flag(c, FC, !get_flag(c, FC)); break;                  /* CCF */
     case 0xF3: c->ime = false; c->ime_pending = 0; break;                 /* DI */
     case 0xFB: if (!c->ime) c->ime_pending = 2; break;                    /* EI */
-    case 0x10: fetch8(g); break;                                          /* STOP: skip byte */
+    case 0x10: fetch8(g); break;            /* STOP: skip byte (simplified; real HW also resets DIV) */
     case 0xC3: { uint16_t t = fetch16(g); internal(g); c->pc = t; break; }
     case 0x18: { int8_t e = (int8_t)fetch8(g); internal(g); c->pc += e; break; }
     case 0x20: case 0x28: case 0x30: case 0x38: {        /* JR cc */

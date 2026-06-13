@@ -9,7 +9,7 @@ static uint8_t io_read(GB *gb, uint8_t r) {
     case 0x04: case 0x05: case 0x06: case 0x07:
         return gb_timer_read(gb, 0xFF00 | r);
     case 0x0F: return gb->iflag | 0xE0;
-    case 0x44: return 0x90;  /* LY stub: report VBlank so ROMs that wait make progress */
+    case 0x44: return 0x90;  /* TODO(milestone-2): real PPU LY. Stub reports VBlank so ROMs progress */
     default:   return gb->io[r];
     }
 }
@@ -37,7 +37,7 @@ static void io_write(GB *gb, uint8_t r, uint8_t v) {
 uint8_t gb_read8(GB *gb, uint16_t a) {
     if (a < 0x4000)  return gb->rom[a];
     if (a < 0x8000) {
-        /* Banked ROM: use rom_bank for MBC1/MBC5/no-MBC */
+        /* Banked ROM: rom_bank selects the 0x4000-0x7FFF window (MBC1 read-banking) */
         uint32_t off = (uint32_t)gb->rom_bank * 0x4000u + (a - 0x4000u);
         if (off < gb->rom_size) return gb->rom[off];
         return 0xFF;

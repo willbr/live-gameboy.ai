@@ -2,3 +2,6 @@ build/
 roms/
 .DS_Store
 *.dSYM/
+gbasm
+live-gameboy
+live-gameboy-ide

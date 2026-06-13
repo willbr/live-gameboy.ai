@@ -23,6 +23,31 @@
 
 typedef struct IdeState IdeState;
 
+struct GbDebug;  /* forward decl — full type in gb/debug.h */
+
+typedef enum {
+    EXEC_RUNNING = 0,
+    EXEC_PAUSED,
+    EXEC_STEP_INSN,
+    EXEC_STEP_LINE,
+    EXEC_STEP_FRAME
+} ExecMode;
+
+/* Advance execution by one host-frame "slice", honoring the current ExecMode.
+ * RUNNING: run until frame_ready or a debug hit. STEP_*: do the step then PAUSE.
+ * PAUSED: no-op. A breakpoint/watchpoint hit transitions to PAUSED. */
+void     ide_run_slice(IdeState *s);
+
+ExecMode ide_exec_mode(IdeState *s);
+void     ide_pause(IdeState *s);
+void     ide_resume(IdeState *s);              /* clears any hit, runs */
+void     ide_step_insn(IdeState *s);
+void     ide_step_line(IdeState *s);
+void     ide_step_frame_once(IdeState *s);
+
+/* The debugger attached to the session's GB (never NULL after ide_new). */
+struct GbDebug *ide_debug(IdeState *s);
+
 /* ide_new — open a .asm or .gb file.
  *   .asm: reads the source, calls live_new(src, path); keeps the LiveSession.
  *   .gb : loads the ROM into a fresh GB (no live session, no source text).

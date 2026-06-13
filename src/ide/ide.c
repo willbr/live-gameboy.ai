@@ -16,6 +16,7 @@
 #include "ide.h"
 #include "../live/live.h"
 #include "../live/tile.h"
+#include "../gb/debug.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -36,6 +37,7 @@ struct IdeState {
     char         status[256];
     int          frame_counter;
     uint16_t     mem_base;  /* base address for hex panel (default 0xC000) */
+    ExecMode     exec_mode; /* execution-control state machine */
 };
 
 /* -------------------------------------------------------------------------
@@ -141,6 +143,9 @@ IdeState *ide_new(const char *path) {
         snprintf(s->status, sizeof(s->status), "ROM loaded: %s", path);
     }
 
+    gb_debug_attach(s->gb);
+    s->exec_mode = EXEC_RUNNING;
+
     return s;
 }
 
@@ -154,6 +159,53 @@ void ide_step_frame(IdeState *s) {
     while (!s->gb->frame_ready)
         gb_step(s->gb);
     s->frame_counter++;
+}
+
+/* -------------------------------------------------------------------------
+ * Execution-control state machine
+ * ------------------------------------------------------------------------- */
+
+ExecMode ide_exec_mode(IdeState *s) { return s ? s->exec_mode : EXEC_PAUSED; }
+struct GbDebug *ide_debug(IdeState *s) { return s ? s->gb->dbg : NULL; }
+
+void ide_pause(IdeState *s)           { if (s) s->exec_mode = EXEC_PAUSED; }
+void ide_resume(IdeState *s)          { if (s) { gb_debug_resume(s->gb); s->exec_mode = EXEC_RUNNING; } }
+void ide_step_insn(IdeState *s)       { if (s) { gb_debug_resume(s->gb); s->exec_mode = EXEC_STEP_INSN; } }
+void ide_step_line(IdeState *s)       { if (s) { gb_debug_resume(s->gb); s->exec_mode = EXEC_STEP_LINE; } }
+void ide_step_frame_once(IdeState *s) { if (s) { gb_debug_resume(s->gb); s->exec_mode = EXEC_STEP_FRAME; } }
+
+static bool dbg_hit(GB *g) { return g->dbg && g->dbg->hit; }
+
+void ide_run_slice(IdeState *s) {
+    if (!s) return;
+    GB *g = s->gb;
+    switch (s->exec_mode) {
+    case EXEC_PAUSED:
+        return;
+    case EXEC_RUNNING:
+        g->frame_ready = false;
+        while (!g->frame_ready) {
+            gb_step(g);
+            if (dbg_hit(g)) { s->exec_mode = EXEC_PAUSED; return; }
+        }
+        s->frame_counter++;
+        return;
+    case EXEC_STEP_INSN:
+        gb_step(g);
+        s->exec_mode = EXEC_PAUSED;
+        return;
+    case EXEC_STEP_LINE: {
+        uint8_t ly0 = g->ly;
+        do { gb_step(g); } while (g->ly == ly0 && !g->frame_ready && !dbg_hit(g));
+        s->exec_mode = EXEC_PAUSED;
+        return;
+    }
+    case EXEC_STEP_FRAME:
+        g->frame_ready = false;
+        while (!g->frame_ready && !dbg_hit(g)) gb_step(g);
+        s->exec_mode = EXEC_PAUSED;
+        return;
+    }
 }
 
 /* -------------------------------------------------------------------------

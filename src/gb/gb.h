@@ -86,6 +86,8 @@ typedef struct GB {
     uint32_t prov_pending;      /* pending source ROM offset (set by last ROM operand read) */
     bool     prov_pending_valid;/* true if prov_pending holds a valid taint */
     bool     fetching_opcode;   /* true while cpu.c is fetching the opcode byte (not an operand) */
+
+    struct GbDebug *dbg;        /* optional debugger; NULL = no debugging (zero cost) */
 } GB;
 
 GB  *gb_new(void);

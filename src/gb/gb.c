@@ -1,4 +1,5 @@
 #include "gb.h"
+#include "debug.h"
 #include <stdlib.h>
 #include <string.h>
 
@@ -12,11 +13,13 @@ void gb_vram_prov_reset(GB *gb) {
 
 GB *gb_new(void) {
     GB *g = calloc(1, sizeof(GB));
+    g->dbg = NULL;
     return g;
 }
 
 void gb_free(GB *gb) {
     if (!gb) return;
+    if (gb->dbg) gb_debug_detach(gb);
     free(gb->rom);
     free(gb);
 }

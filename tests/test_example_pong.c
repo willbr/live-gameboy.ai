@@ -63,10 +63,36 @@ static void test_pong_paddle_up(void) {
     gb_free(gb); asm_free(&r);
 }
 
+/* APU is powered on by init. */
+static void test_pong_apu_on(void) {
+    AsmResult r = ex_assemble("examples/pong.asm");
+    ASSERT_TRUE(r.ok);
+    GB *gb = gb_new();
+    gb_load_rom(gb, r.rom, r.rom_size);
+    gb_reset(gb);
+    ex_run(gb, 5, 2000000);
+    ASSERT_TRUE(gb_read8(gb, 0xFF26) & 0x80);
+    gb_free(gb); asm_free(&r);
+}
+
+/* A CH1 blip fires during a rally (paddle/wall/score bounces). */
+static void test_pong_sfx_fires(void) {
+    AsmResult r = ex_assemble("examples/pong.asm");
+    ASSERT_TRUE(r.ok);
+    GB *gb = gb_new();
+    gb_load_rom(gb, r.rom, r.rom_size);
+    gb_reset(gb);
+    uint8_t seen = ex_run_watch_nr52(gb, 250, 9000000);
+    ASSERT_TRUE(seen & 0x01);
+    gb_free(gb); asm_free(&r);
+}
+
 int main(void) {
     test_pong_boots();
     test_pong_ball_moves();
     test_pong_ball_in_bounds();
     test_pong_paddle_up();
+    test_pong_apu_on();
+    test_pong_sfx_fires();
     TEST_MAIN_END();
 }

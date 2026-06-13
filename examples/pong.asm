@@ -10,6 +10,8 @@
 ;    screen live (ball.2bpp / paddle.2bpp are paintable assets).
 ; 4. TELEPORT (OAM edit): edit sprite 0's Y/X in the OAM panel to move the
 ;    ball by hand. Use F8 (soft reset) if you change Main/init code.
+; 5. TUNE THE SOUND (F5): edit the `ld de, $....` pitch constants in
+;    UpdateBall (PADDLE-HIT / WALL-BOUNCE / SCORE), press F5, hear it change.
 ; ======================================================================
 ;
 ; Controls: Up/Down = move left paddle. Right paddle is a simple AI.
@@ -82,6 +84,14 @@ Main:
     ld ($C0A4), a            ; lPadY
     ld a, 64
     ld ($C0A5), a            ; rPadY
+
+    ; --- Sound: power on APU, full volume, route all channels both sides ---
+    ld a, $80
+    ldh ($26), a             ; NR52 = APU on (write FIRST)
+    ld a, $77
+    ldh ($24), a             ; NR50 = master volume L/R
+    ld a, $FF
+    ldh ($25), a             ; NR51 = all channels to both speakers
 
     ; --- LCD on: LCDC=$93 (LCD on, tiledata $8000, OBJ on, BG on) ---
     ld a, $93
@@ -189,6 +199,8 @@ UpdateBall:
     jr nc, .checkRight
     ld a, 1
     ld ($C0A2), a
+    ld de, $076C             ; PADDLE-HIT pitch (~885 Hz)  ; TWEAK + F5
+    call SfxTone
     jr .yaxis
 .checkRight:
     ; bounce off right paddle zone (ballX >= 144) -> DX = -1 ($FF)
@@ -196,6 +208,8 @@ UpdateBall:
     jr c, .yaxis
     ld a, $FF
     ld ($C0A2), a
+    ld de, $06D6             ; SCORE pitch (~440 Hz)       ; TWEAK + F5
+    call SfxTone
 .yaxis:
     ; --- Y axis ---
     ld a, ($C0A3)           ; ballDY
@@ -208,6 +222,8 @@ UpdateBall:
     jr nc, .checkBottom
     ld a, 1
     ld ($C0A3), a
+    ld de, $05DC             ; WALL-BOUNCE pitch (~239 Hz) ; TWEAK + F5
+    call SfxTone
     ret
 .checkBottom:
     ; bounce off bottom (ballY >= 136) -> DY = -1
@@ -215,6 +231,8 @@ UpdateBall:
     ret c
     ld a, $FF
     ld ($C0A3), a
+    ld de, $05DC             ; WALL-BOUNCE pitch (~239 Hz) ; TWEAK + F5
+    call SfxTone
     ret
 
 DrawSprites:
@@ -243,4 +261,21 @@ DrawSprites:
     ld a, 152
     ld ($C00D), a
     ld ($C011), a
+    ret
+
+; ====================== SOUND ======================
+; SfxTone — short CH1 (pulse) blip. In: D=freq hi (bits2-0), E=freq lo.
+; Clobbers A,D,E; preserves B,C,HL. The freq is the live-edit surface.
+SfxTone:
+    xor a
+    ldh ($10), a             ; NR10 = no sweep
+    ld a, $A0
+    ldh ($11), a             ; NR11 = duty 50% + length (short)
+    ld a, $F2
+    ldh ($12), a             ; NR12 = vol 15, decay (DAC on)
+    ld a, e
+    ldh ($13), a             ; NR13 = freq lo
+    ld a, d
+    or $C0
+    ldh ($14), a             ; NR14 = trigger + length-enable + freq hi
     ret

@@ -51,4 +51,21 @@ static int ex_fb_nonblank(GB *gb) {
     for (int i = 0; i < 160 * 144; i++) if (fb[i] != 0) return 1;
     return 0;
 }
+
+/* Run up to `frames` VBlanks (or `max_steps`), sampling NR52 ($FF26) every
+ * step and OR-ing it into the result. Returned value's bit0=CH1, bit1=CH2,
+ * bit3=CH4 indicate a channel was active at some point during the run. */
+static uint8_t ex_run_watch_nr52(GB *gb, int frames, int max_steps) {
+    uint8_t seen = 0;
+    int f = 0, s = 0;
+    while (f < frames && s < max_steps) {
+        int tc = gb_step(gb);
+        gb_tick(gb, tc);
+        gb_ppu_tick(gb, tc);
+        seen |= gb_read8(gb, 0xFF26);
+        if (gb->frame_ready) { gb->frame_ready = false; f++; }
+        s++;
+    }
+    return seen;
+}
 #endif

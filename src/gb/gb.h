@@ -45,6 +45,10 @@ typedef struct GB {
     bool     window_active;   /* window currently driving the fetcher this line */
     bool     win_started;     /* window was shown on this line (for win_line increment) */
     uint8_t  oam_dma_src;     /* high byte of last DMA source */
+    /* per-line selected sprites (Mode 2 scan result) */
+    uint8_t  spr_idx[10];     /* OAM entry indices, in scan order */
+    int      spr_count;
+    uint8_t  bg_color_at;     /* BG color (pre-palette) of the pixel being produced */
 
     /* timer */
     uint16_t div16;        /* internal divider; DIV (FF04) is its high byte */

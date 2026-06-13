@@ -174,6 +174,16 @@ static void render_begin_line(GB *g) {
     g->window_active = false;
     g->win_started = false;
     g->discard = g->scx & 7;          /* fine-scroll discard counter */
+
+    /* Mode 2 OAM scan: select up to 10 sprites covering this line, in OAM order */
+    g->spr_count = 0;
+    int height = (g->lcdc & 0x04) ? 16 : 8;
+    for (int i = 0; i < 40 && g->spr_count < 10; i++) {
+        int sy = g->oam[i * 4 + 0];
+        int line = g->ly + 16 - sy;
+        if (line >= 0 && line < height)
+            g->spr_idx[g->spr_count++] = (uint8_t)i;
+    }
 }
 
 /* push 8 BG/window pixels for the next tile column into the fifo */
@@ -227,7 +237,44 @@ static void render_step(GB *g) {
     memmove(g->bg_fifo_c, g->bg_fifo_c + 1, (size_t)(--g->bg_fifo_n));
 
     if (!(g->lcdc & 0x01)) color = 0;     /* BG/window disabled -> color 0 */
+    g->bg_color_at = color;               /* pre-palette BG color for priority test */
     uint8_t shade = pal_shade(g->bgp, color);
+
+    /* sprites */
+    if ((g->lcdc & 0x02) && g->spr_count > 0) {
+        int best = -1, best_x = 256;
+        uint8_t best_color = 0, best_pal = 0, best_prio = 0;
+        int height = (g->lcdc & 0x04) ? 16 : 8;
+        for (int k = 0; k < g->spr_count; k++) {
+            int i = g->spr_idx[k];
+            int sx = g->oam[i*4+1];
+            int screen_x = sx - 8;
+            if (g->fx < screen_x || g->fx >= screen_x + 8) continue;
+            int col_in = g->fx - screen_x;          /* 0..7 from left */
+            uint8_t flags = g->oam[i*4+3];
+            if (flags & 0x20) col_in = 7 - col_in;  /* X-flip */
+            int line = g->ly + 16 - g->oam[i*4+0];  /* 0..height-1 */
+            if (flags & 0x40) line = height - 1 - line;  /* Y-flip */
+            int tile = g->oam[i*4+2];
+            if (height == 16) { tile &= 0xFE; if (line >= 8) { tile |= 1; line -= 8; } }
+            uint8_t lo = g->vram[tile*16 + line*2];
+            uint8_t hi = g->vram[tile*16 + line*2 + 1];
+            int b = 7 - col_in;
+            uint8_t scolor = (uint8_t)(((hi >> b) & 1) << 1 | ((lo >> b) & 1));
+            if (scolor == 0) continue;              /* transparent */
+            /* DMG priority: smallest X wins; tie -> earliest OAM (k order) */
+            if (sx < best_x) {
+                best = i; best_x = sx; best_color = scolor;
+                best_pal = (flags & 0x10) ? g->obp1 : g->obp0;
+                best_prio = flags & 0x80;
+            }
+        }
+        if (best >= 0) {
+            bool behind = best_prio && (g->bg_color_at != 0);
+            if (!behind) shade = pal_shade(best_pal, best_color);
+        }
+    }
+
     g->framebuffer[g->ly * 160 + g->fx] = shade;
     g->fx++;
 }

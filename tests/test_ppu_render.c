@@ -138,5 +138,104 @@ int main(void) {
         ASSERT_EQ(px(g, 0, 0), 0);
         gb_free(g);
     }
+    {   /* a single 8x8 sprite at (8,16)=>screen(0,0), solid color2, OBP0 identity */
+        GB *g = fresh();
+        g->lcdc = 0x93;            /* LCD on, BG on, OBJ enable(bit1), tiledata 8000 */
+        g->bgp = 0xE4; g->obp0 = 0xE4;
+        memset(g->vram + 0x1800, 0, 0x400);     /* blank BG */
+        uint8_t solid2[16];
+        for (int i=0;i<8;i++){ solid2[i*2]=0x00; solid2[i*2+1]=0xFF; } /* hi=FF lo=00 => color 2 */
+        set_tile(g, 1, solid2);
+        g->oam[0]=16; g->oam[1]=8; g->oam[2]=1; g->oam[3]=0x00;  /* y,x,tile,flags */
+        render_frame(g);
+        ASSERT_EQ(px(g, 0, 0), 2);
+        ASSERT_EQ(px(g, 7, 7), 2);
+        ASSERT_EQ(px(g, 8, 0), 0);    /* outside sprite */
+        gb_free(g);
+    }
+    {   /* sprite color 0 is transparent: BG shows through */
+        GB *g = fresh();
+        g->lcdc = 0x93; g->bgp = 0xE4; g->obp0 = 0xE4;
+        uint8_t solid3[16]; for(int i=0;i<16;i++) solid3[i]=0xFF;  /* BG tile0 solid c3 */
+        set_tile(g, 0, solid3);
+        memset(g->vram + 0x1800, 0, 0x400);
+        uint8_t t[16]; memset(t,0,16);  /* sprite tile1 all color 0 */
+        set_tile(g, 1, t);
+        g->oam[0]=16; g->oam[1]=8; g->oam[2]=1; g->oam[3]=0x00;
+        render_frame(g);
+        ASSERT_EQ(px(g, 0, 0), 3);    /* BG shows; sprite transparent */
+        gb_free(g);
+    }
+    {   /* OBJ-behind-BG priority (flags bit7=1): sprite hidden where BG color != 0 */
+        GB *g = fresh();
+        g->lcdc = 0x93; g->bgp = 0xE4; g->obp0 = 0xE4;
+        uint8_t solid3[16]; for(int i=0;i<16;i++) solid3[i]=0xFF;
+        set_tile(g, 0, solid3);            /* BG solid c3 */
+        memset(g->vram + 0x1800, 0, 0x400);
+        uint8_t solid2[16]; for(int i=0;i<8;i++){solid2[i*2]=0;solid2[i*2+1]=0xFF;}
+        set_tile(g, 1, solid2);            /* sprite solid c2 */
+        g->oam[0]=16; g->oam[1]=8; g->oam[2]=1; g->oam[3]=0x80;  /* bit7 set */
+        render_frame(g);
+        ASSERT_EQ(px(g, 0, 0), 3);    /* BG wins because BG color != 0 */
+        gb_free(g);
+    }
+    {   /* X-flip: pattern reversed */
+        GB *g = fresh();
+        g->lcdc = 0x93; g->bgp = 0xE4; g->obp0 = 0xE4;
+        memset(g->vram + 0x1800, 0, 0x400);
+        uint8_t t[16]; memset(t,0,16);
+        t[1] = 0x80;     /* row0 hi byte bit7 -> color 2 at leftmost pixel */
+        set_tile(g, 1, t);
+        g->oam[0]=16; g->oam[1]=8; g->oam[2]=1; g->oam[3]=0x20;  /* X-flip */
+        render_frame(g);
+        ASSERT_EQ(px(g, 7, 0), 2);    /* leftmost pixel now at rightmost */
+        ASSERT_EQ(px(g, 0, 0), 0);
+        gb_free(g);
+    }
+    {   /* DMG X priority: lower X wins regardless of OAM order */
+        GB *g = fresh();
+        g->lcdc = 0x93; g->bgp = 0xE4; g->obp0 = 0xE4; g->obp1 = 0xE4;
+        memset(g->vram + 0x1800, 0, 0x400);
+        uint8_t s2[16]; for(int i=0;i<8;i++){s2[i*2]=0;s2[i*2+1]=0xFF;}   /* color2 */
+        uint8_t s3[16]; for(int i=0;i<16;i++) s3[i]=0xFF;                  /* color3 */
+        set_tile(g, 1, s2); set_tile(g, 2, s3);
+        /* entry0: x=10 tile1(c2); entry1: x=8 tile2(c3). lower x (entry1) wins at overlap */
+        g->oam[0]=16; g->oam[1]=10; g->oam[2]=1; g->oam[3]=0;
+        g->oam[4]=16; g->oam[5]=8;  g->oam[6]=2; g->oam[7]=0;
+        render_frame(g);
+        ASSERT_EQ(px(g, 2, 0), 3);   /* overlap region: smaller-X sprite (c3) wins */
+        gb_free(g);
+    }
+    {   /* 8x16 sprite: lower tile used for rows 8-15 */
+        GB *g = fresh();
+        g->lcdc = 0x97;             /* LCD on, BG on, OBJ enable, OBJ size 8x16(bit2), tiledata 8000 */
+        g->bgp = 0xE4; g->obp0 = 0xE4;
+        memset(g->vram + 0x1800, 0, 0x400);
+        uint8_t top[16];    for(int i=0;i<8;i++){top[i*2]=0;top[i*2+1]=0xFF;}    /* c2 */
+        uint8_t bot[16];    for(int i=0;i<16;i++) bot[i]=0xFF;                    /* c3 */
+        set_tile(g, 2, top);   /* tile&0xFE = 2 */
+        set_tile(g, 3, bot);   /* tile|1   = 3 */
+        g->oam[0]=16; g->oam[1]=8; g->oam[2]=2; g->oam[3]=0;
+        render_frame(g);
+        ASSERT_EQ(px(g, 0, 0), 2);    /* top half */
+        ASSERT_EQ(px(g, 0, 8), 3);    /* bottom half */
+        gb_free(g);
+    }
+    {   /* 10-sprites-per-line limit: 11th on the same line is dropped */
+        GB *g = fresh();
+        g->lcdc = 0x93; g->bgp = 0xE4; g->obp0 = 0xE4;
+        memset(g->vram + 0x1800, 0, 0x400);
+        uint8_t s3[16]; for(int i=0;i<16;i++) s3[i]=0xFF;
+        set_tile(g, 1, s3);
+        for (int i = 0; i < 11; i++) {     /* all on line 0, increasing X */
+            g->oam[i*4+0]=16; g->oam[i*4+1]=(uint8_t)(8 + i*8);
+            g->oam[i*4+2]=1;  g->oam[i*4+3]=0;
+        }
+        render_frame(g);
+        ASSERT_EQ(px(g, 0, 0), 3);          /* sprite 0 visible */
+        ASSERT_EQ(px(g, 8*9, 0), 3);        /* sprite 9 (10th) visible */
+        ASSERT_EQ(px(g, 8*10, 0), 0);       /* sprite 10 (11th) dropped */
+        gb_free(g);
+    }
     TEST_MAIN_END();
 }

@@ -302,6 +302,24 @@ typedef struct {
  * --------------------------------------------------------------------- */
 
 /*
+ * AsmRefSite records a 2-byte absolute address operand in the ROM that
+ * references exactly one symbol.  Used by the live-patching engine to rebind
+ * call/jump/data sites when a function relocates.
+ *
+ * Fields:
+ *   off    — linear ROM offset of the first (low) byte of the 16-bit address
+ *   sym    — name of the referenced symbol (NUL-terminated)
+ *   addend — constant offset added to the symbol (e.g. 2 for Label+2)
+ *   size   — always 2 (the number of bytes encoding the address)
+ */
+typedef struct {
+    uint32_t off;
+    char     sym[64];
+    long     addend;
+    int      size;   /* always 2 */
+} AsmRefSite;
+
+/*
  * AsmResult is returned by asm_assemble().  All pointer fields are
  * heap-allocated; call asm_free() when done.
  *
@@ -319,6 +337,8 @@ typedef struct {
  *   ok          — false if any error occurred; ROM content is partial.
  *   placements  — function placements used in this build (nplacements entries)
  *   nplacements — number of placements
+ *   refs        — absolute address reference sites (nrefs entries)
+ *   nrefs       — number of reference sites
  */
 typedef struct {
     uint8_t  *rom;
@@ -339,6 +359,9 @@ typedef struct {
 
     AsmPlacement *placements;  /* function placements (NULL if no layout was run) */
     int           nplacements;
+
+    AsmRefSite   *refs;    /* absolute address reference sites */
+    int           nrefs;
 } AsmResult;
 
 /*

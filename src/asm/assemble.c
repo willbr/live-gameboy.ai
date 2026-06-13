@@ -386,6 +386,133 @@ static int ds_count(const AsmToken *toks, int start, int count,
  * Linemap helper
  * ----------------------------------------------------------------------- */
 
+static void refsite_push(AsmResult *r, uint32_t off, const char *sym, long addend)
+{
+    int n = r->nrefs;
+    void *p = realloc(r->refs, (size_t)(n + 1) * sizeof(*r->refs));
+    if (!p) return;
+    r->refs = p;
+    AsmRefSite *rs = &r->refs[n];
+    rs->off    = off;
+    rs->addend = addend;
+    rs->size   = 2;
+    size_t slen = strlen(sym);
+    if (slen >= sizeof(rs->sym)) slen = sizeof(rs->sym) - 1;
+    memcpy(rs->sym, sym, slen);
+    rs->sym[slen] = '\0';
+    r->nrefs = n + 1;
+}
+
+/*
+ * expr_single_sym — inspect a token span [start, start+count) and determine
+ * whether it is a single-symbol reference with an optional constant addend.
+ *
+ * Accepted forms:
+ *   SYM            -> sym_out = "SYM", addend_out = 0
+ *   SYM + constant -> sym_out = "SYM", addend_out = +constant
+ *   SYM - constant -> sym_out = "SYM", addend_out = -constant
+ *
+ * Returns true only if exactly one IDENT token that names a defined symbol
+ * (from `st`) is present, and the expression is of the above form.
+ * Returns false for pure constants or multi-symbol expressions.
+ */
+static bool expr_single_sym(const AsmToken *toks, int start, int count,
+                             const AsmSymbolTable *st,
+                             char *sym_out, size_t sym_out_sz,
+                             long *addend_out)
+{
+    int end = start + count;
+
+    /* Count identifiers that are defined non-constant symbols */
+    int sym_count = 0;
+    int sym_idx   = -1;
+    for (int i = start; i < end; i++) {
+        if (toks[i].kind == TOK_IDENT) {
+            /* Check if this ident is a register name or keyword — skip those */
+            const char *text = toks[i].text;
+            size_t      len  = toks[i].len;
+            /* Common register names to skip */
+            static const char *regs[] = {
+                "a","b","c","d","e","h","l",
+                "bc","de","hl","sp","af",
+                "nz","z","nc",
+                "hli","hld","hl+","hl-",
+                "low","high","bank",
+                NULL
+            };
+            bool is_reg = false;
+            for (int r = 0; regs[r]; r++) {
+                size_t rl = strlen(regs[r]);
+                if (len == rl) {
+                    bool eq = true;
+                    for (size_t k = 0; k < rl && eq; k++)
+                        eq = (tolower((unsigned char)text[k]) ==
+                              tolower((unsigned char)regs[r][k]));
+                    if (eq) { is_reg = true; break; }
+                }
+            }
+            if (is_reg) continue;
+
+            /* Look up in symbol table */
+            char name[128];
+            size_t nl = len < 127 ? len : 127;
+            memcpy(name, text, nl);
+            name[nl] = '\0';
+            const AsmSymbol *s = asm_sym_lookup(st, name);
+            if (!s || !s->defined || s->bank < 0) continue; /* not a code/data sym */
+
+            sym_count++;
+            sym_idx = i;
+        }
+    }
+
+    if (sym_count != 1) return false;
+
+    /* Extract the symbol name */
+    const AsmToken *st_tok = &toks[sym_idx];
+    size_t nl = st_tok->len < sym_out_sz - 1 ? st_tok->len : sym_out_sz - 1;
+    memcpy(sym_out, st_tok->text, nl);
+    sym_out[nl] = '\0';
+
+    /* Check expression shape: must be SYM, SYM+N, or SYM-N.
+     * Count non-comma, non-whitespace tokens (excluding the sym itself). */
+    int non_sym = 0;
+    for (int i = start; i < end; i++) {
+        if (i == sym_idx) continue;
+        if (toks[i].kind == TOK_PUNCT &&
+            toks[i].len == 1 &&
+            (toks[i].text[0] == '+' || toks[i].text[0] == '-')) {
+            non_sym++; continue;
+        }
+        if (toks[i].kind == TOK_NUMBER) {
+            non_sym++; continue;
+        }
+        /* Any other token: complex expression */
+        return false;
+    }
+
+    /* Simple: just SYM */
+    if (non_sym == 0) { *addend_out = 0; return true; }
+
+    /* SYM +/- N: expect exactly 2 more tokens (sign + number) */
+    if (non_sym == 2) {
+        /* Find sign and number */
+        int sign_idx = -1, num_idx = -1;
+        for (int i = start; i < end; i++) {
+            if (i == sym_idx) continue;
+            if (toks[i].kind == TOK_PUNCT) sign_idx = i;
+            if (toks[i].kind == TOK_NUMBER) num_idx = i;
+        }
+        if (sign_idx < 0 || num_idx < 0) return false;
+        long addend = toks[num_idx].value;
+        if (toks[sign_idx].text[0] == '-') addend = -addend;
+        *addend_out = addend;
+        return true;
+    }
+
+    return false;
+}
+
 static void linemap_push(AsmResult *r, int line, uint32_t off)
 {
     int n = r->nlines;
@@ -1348,6 +1475,61 @@ AsmResult asm_assemble_mem(const char *src, const char *filename,
                     r.prov_line[sec.cur_off + (uint32_t)k] = s->line;
                 linemap_push(&r, s->line, sec.cur_off);
             }
+
+            /*
+             * Reference-site tracking: for 3-byte instructions whose last 2
+             * bytes are a 16-bit absolute address operand, check whether that
+             * operand references exactly one symbol. If so, record a refsite
+             * at (sec.cur_off + 1) — the byte offset of the low address byte.
+             *
+             * Mnemonics that carry an absolute a16 operand:
+             *   jp  a16          (nops==1, ops[0] is IMM)
+             *   jp  cc, a16      (nops==2, ops[1] is IMM)
+             *   call a16         (nops==1, ops[0] is IMM)
+             *   call cc, a16     (nops==2, ops[1] is IMM)
+             *   ld  rr, d16      (nops==2, ops[0] is REG rp, ops[1] is IMM)
+             *
+             * jr / jr cc use a RELATIVE displacement — not recorded.
+             */
+            if (n == 3 && sec.cur_off + 1 < r.rom_size) {
+                /* Identify which operand holds the address */
+                const AsmOperand *addr_op = NULL;
+                char mn_lc[16] = {0};
+                for (size_t mi = 0; s->instr.mnemonic[mi] && mi < sizeof(mn_lc)-1; mi++)
+                    mn_lc[mi] = (char)tolower((unsigned char)s->instr.mnemonic[mi]);
+
+                bool is_jp   = (strcmp(mn_lc, "jp")   == 0);
+                bool is_call = (strcmp(mn_lc, "call") == 0);
+                bool is_ld   = (strcmp(mn_lc, "ld")   == 0);
+
+                if (is_jp || is_call) {
+                    /* jp (hl) is 1 byte — already filtered by n==3.
+                     * jp a16: ops[0] is IMM; jp cc,a16: ops[1] is IMM */
+                    if (s->instr.nops == 1 && s->instr.ops[0].form == OPND_IMM)
+                        addr_op = &s->instr.ops[0];
+                    else if (s->instr.nops == 2 && s->instr.ops[1].form == OPND_IMM)
+                        addr_op = &s->instr.ops[1];
+                } else if (is_ld && s->instr.nops == 2 &&
+                           s->instr.ops[0].form == OPND_REG &&
+                           s->instr.ops[1].form == OPND_IMM) {
+                    /* ld rr, d16: verify dst is a 16-bit register pair */
+                    const AsmToken *dt = &toks[s->instr.ops[0].tok_start];
+                    if (tok_eq_str(dt, "bc") || tok_eq_str(dt, "de") ||
+                        tok_eq_str(dt, "hl") || tok_eq_str(dt, "sp"))
+                        addr_op = &s->instr.ops[1];
+                }
+
+                if (addr_op) {
+                    char sym_name[64] = {0};
+                    long addend = 0;
+                    if (expr_single_sym(toks, addr_op->tok_start,
+                                        addr_op->tok_count,
+                                        &st, sym_name, sizeof(sym_name),
+                                        &addend)) {
+                        refsite_push(&r, sec.cur_off + 1, sym_name, addend);
+                    }
+                }
+            }
             break;
         }
 
@@ -1388,6 +1570,42 @@ AsmResult asm_assemble_mem(const char *src, const char *filename,
                                 r.prov_line, (int32_t)s->line,
                                 &r);
                 if (n > 0) linemap_push(&r, s->line, sec.cur_off);
+                /*
+                 * Reference-site tracking for DW: each element that resolves
+                 * to a single symbol reference gets a refsite.  We walk the
+                 * argument token span splitting on commas, and for each
+                 * element check expr_single_sym.
+                 */
+                {
+                    int dw_end  = s->dir.args_start + s->dir.args_count;
+                    int elem_start = s->dir.args_start;
+                    uint32_t elem_off = sec.cur_off;
+                    while (elem_start < dw_end) {
+                        /* Find end of this element (next comma or end) */
+                        int elem_end = elem_start;
+                        while (elem_end < dw_end) {
+                            if (toks[elem_end].kind == TOK_PUNCT &&
+                                toks[elem_end].len == 1 &&
+                                toks[elem_end].text[0] == ',')
+                                break;
+                            elem_end++;
+                        }
+                        int elem_count = elem_end - elem_start;
+                        if (elem_count > 0) {
+                            char sym_name[64] = {0};
+                            long addend = 0;
+                            if (expr_single_sym(toks, elem_start, elem_count,
+                                                &st, sym_name, sizeof(sym_name),
+                                                &addend)) {
+                                refsite_push(&r, elem_off, sym_name, addend);
+                            }
+                        }
+                        elem_off += 2; /* each DW element is 2 bytes */
+                        /* skip the comma */
+                        if (elem_end < dw_end) elem_end++;
+                        elem_start = elem_end;
+                    }
+                }
                 break;
             }
 
@@ -1573,5 +1791,6 @@ void asm_free(AsmResult *r)
     free(r->prov_line);
     free(r->diags);
     free(r->placements);
+    free(r->refs);
     memset(r, 0, sizeof(*r));
 }

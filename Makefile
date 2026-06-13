@@ -9,6 +9,10 @@ GB_OBJ  = $(GB_SRC:src/gb/%.c=$(BUILD)/gb/%.o)
 ASM_SRC = $(filter-out src/asm/gbasm.c,$(wildcard src/asm/*.c))
 ASM_OBJ = $(ASM_SRC:src/asm/%.c=$(BUILD)/asm/%.o)
 
+# Live-patching engine objects
+LIVE_SRC = $(wildcard src/live/*.c)
+LIVE_OBJ = $(LIVE_SRC:src/live/%.c=$(BUILD)/live/%.o)
+
 TESTS   = $(wildcard tests/test_*.c)
 TESTBIN = $(TESTS:tests/%.c=$(BUILD)/%)
 
@@ -20,10 +24,13 @@ $(BUILD)/gb/%.o: src/gb/%.c src/gb/gb.h | $(BUILD)/gb
 $(BUILD)/asm/%.o: src/asm/%.c src/asm/asm.h | $(BUILD)/asm
 	$(CC) $(CFLAGS) -c $< -o $@
 
-$(BUILD)/%: tests/%.c $(GB_OBJ) $(ASM_OBJ) tests/test.h | $(BUILD)
-	$(CC) $(CFLAGS) $< $(GB_OBJ) $(ASM_OBJ) -o $@
+$(BUILD)/live/%.o: src/live/%.c src/live/live.h | $(BUILD)/live
+	$(CC) $(CFLAGS) -c $< -o $@
 
-$(BUILD) $(BUILD)/gb $(BUILD)/asm:
+$(BUILD)/%: tests/%.c $(GB_OBJ) $(ASM_OBJ) $(LIVE_OBJ) tests/test.h | $(BUILD)
+	$(CC) $(CFLAGS) $< $(GB_OBJ) $(ASM_OBJ) $(LIVE_OBJ) -o $@
+
+$(BUILD) $(BUILD)/gb $(BUILD)/asm $(BUILD)/live:
 	mkdir -p $@
 
 test: $(TESTBIN)

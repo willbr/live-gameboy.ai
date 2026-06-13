@@ -195,6 +195,37 @@ static void clock_env(GB *g) {
     }
 }
 
+/* ---- CH3 helpers ---- */
+
+/* Helper: get CH3 output level shift from NR32 bits 6-5 */
+static int ch3_level_shift(uint8_t nr32) {
+    uint8_t level = (nr32 >> 5) & 0x03;
+    /* 0=mute (shift by 4, effectively silence), 1=100% (>>0), 2=50% (>>1), 3=25% (>>2) */
+    switch (level) {
+        case 1: return 0;
+        case 2: return 1;
+        case 3: return 2;
+        default: return 4;  /* mute: shift by 4 zeroes out all 4-bit samples */
+    }
+}
+
+/* Get the current 4-bit wave sample for CH3 at position pos (0..31) */
+static int ch3_sample(GB *g) {
+    /* Wave RAM: FF30-FF3F = indices 0x20-0x2F in apu_reg */
+    /* pos 0..31: each byte holds 2 samples; high nibble is first */
+    uint8_t byte = g->apu_reg[0x20 + (g->ch3.pos >> 1)];
+    int nibble = (g->ch3.pos & 1) ? (byte & 0x0F) : (byte >> 4);
+    return nibble;
+}
+
+static int ch3_output(GB *g) {
+    if (!g->ch3.enabled || !g->ch3.dac) return 0;
+    uint8_t nr32 = g->apu_reg[0x0C];  /* NR32 = FF1C */
+    int shift = ch3_level_shift(nr32);
+    /* shift==4 means mute */
+    return ch3_sample(g) >> shift;
+}
+
 /* ---- Trigger helpers ---- */
 
 static void trigger_ch1(GB *g) {
@@ -244,6 +275,24 @@ static void trigger_ch2(GB *g) {
     /* Reload envelope */
     g->ch2.vol = (nr22 >> 4) & 0x0F;
     g->ch2.env_timer = nr22 & 0x07;
+}
+
+static void trigger_ch3(GB *g) {
+    uint8_t nr30 = g->apu_reg[0x0A];  /* NR30 = FF1A */
+    /* DAC on if NR30 bit7 set */
+    g->ch3.dac = (nr30 & 0x80) != 0;
+    if (!g->ch3.dac) { g->ch3.enabled = false; return; }
+
+    g->ch3.enabled = true;
+    /* Reload length if 0 */
+    if (g->ch3.len == 0) g->ch3.len = 256;
+    /* Reload freq timer: (2048 - freq) * 2 */
+    uint8_t nr33 = g->apu_reg[0x0D];  /* NR33 = FF1D */
+    uint8_t nr34 = g->apu_reg[0x0E];  /* NR34 = FF1E */
+    uint16_t freq11 = ((uint16_t)(nr34 & 0x07) << 8) | nr33;
+    g->ch3.timer = (2048 - freq11) * 2;
+    /* Reset wave position */
+    g->ch3.pos = 0;
 }
 
 /* ---- Per-channel digital output (0..15) ---- */
@@ -373,6 +422,16 @@ void gb_apu_write(GB *gb, uint16_t addr, uint8_t v) {
     case 0xFF19:  /* NR24: CH2 trigger */
         if (v & 0x80) trigger_ch2(gb);
         break;
+    case 0xFF1A:  /* NR30: CH3 DAC power */
+        gb->ch3.dac = (v & 0x80) != 0;
+        if (!gb->ch3.dac) gb->ch3.enabled = false;
+        break;
+    case 0xFF1B:  /* NR31: CH3 length load */
+        gb->ch3.len = 256 - v;
+        break;
+    case 0xFF1E:  /* NR34: CH3 trigger */
+        if (v & 0x80) trigger_ch3(gb);
+        break;
     }
 }
 
@@ -427,6 +486,20 @@ void gb_apu_tick(GB *gb, int tcycles) {
             }
         }
 
+        /* Tick CH3 frequency timer */
+        if (gb->ch3.enabled) {
+            if (gb->ch3.timer > 0) gb->ch3.timer--;
+            if (gb->ch3.timer == 0) {
+                /* Reload timer from NR33/NR34 */
+                uint8_t nr33 = gb->apu_reg[0x0D];  /* NR33 = FF1D */
+                uint8_t nr34 = gb->apu_reg[0x0E];  /* NR34 = FF1E */
+                uint16_t freq11 = ((uint16_t)(nr34 & 0x07) << 8) | nr33;
+                gb->ch3.timer = (2048 - freq11) * 2;
+                /* Advance wave position */
+                gb->ch3.pos = (gb->ch3.pos + 1) & 31;
+            }
+        }
+
         /* Sample output: accumulate cycles and push mono-summed stereo at sample rate */
         gb->audio_accum += 1.0;
         while (gb->audio_accum >= cycles_per_sample) {
@@ -440,7 +513,10 @@ void gb_apu_tick(GB *gb, int tcycles) {
             if (gb->ch2.dac) {
                 sample += dac_float(ch2_output(gb));
             }
-            /* CH3, CH4 not yet implemented: contribute 0 */
+            if (gb->ch3.dac) {
+                sample += dac_float(ch3_output(gb));
+            }
+            /* CH4 not yet implemented: contributes 0 */
 
             /* Divide by 4 (total channels) for mono sum, output as stereo */
             float mono = sample / 4.0f;

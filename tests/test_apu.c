@@ -211,5 +211,160 @@ int main(void) {
         gb_free(g);
     }
 
+    /* ---- Task 3: Wave channel CH3 tests ---- */
+
+    {   /* Test 1: CH3 oscillates with alternating wave pattern, NR52 bit2 set */
+        GB *g = fresh();
+        gb_apu_set_sample_rate(g, 48000);
+        gb_write8(g, 0xFF26, 0x80);  /* power on */
+
+        /* Fill wave RAM: alternating 0x00 and 0xFF bytes => samples alternate 0,0,15,15 pattern.
+           Actually 0x00 = two 0-samples, 0xFF = two 15-samples: gives 0,0,15,15,...repeating.
+           Each byte at FF30+n: 0x00->nibbles(0,0), 0xFF->nibbles(15,15). */
+        for (int i = 0; i < 16; i++) {
+            gb_write8(g, 0xFF30 + i, (i & 1) ? 0xFF : 0x00);
+        }
+        /* NR30: DAC on */
+        gb_write8(g, 0xFF1A, 0x80);
+        /* NR32: output level 100% (bits 6-5 = 01 => 0x20) */
+        gb_write8(g, 0xFF1C, 0x20);
+        /* NR33/NR34: mid frequency. freq11 = 0x400 = 1024.
+           Timer reload = (2048 - 1024) * 2 = 2048 T-cycles per step.
+           32 steps per full wave period = 2048 * 32 = 65536 T-cycles per period. */
+        gb_write8(g, 0xFF1D, 0x00);         /* NR33: freq lo = 0x00 */
+        gb_write8(g, 0xFF1E, 0x84);         /* NR34: trigger(bit7) + freq_hi=4 => freq11=0x400 */
+
+        /* NR52 bit2 should be set after trigger */
+        ASSERT_TRUE(gb_read8(g, 0xFF26) & 0x04);
+
+        /* Advance 2 full wave periods to get a good sample spread */
+        gb_tick(g, 65536 * 2);
+
+        float buf[4096];
+        int n = gb_audio_read(g, buf, 4096);
+        ASSERT_TRUE(n > 0);
+
+        /* Find max and min in left channel (even indices) */
+        float max_val = -2.0f, min_val = 2.0f;
+        for (int i = 0; i < n; i += 2) {
+            if (buf[i] > max_val) max_val = buf[i];
+            if (buf[i] < min_val) min_val = buf[i];
+        }
+        /* At 100% level, samples alternate 0 and 15.
+           dac_float(0)/4 = -0.25; dac_float(15)/4 = +0.25 (before mixing with silent CH1/CH2).
+           Expect output clearly oscillating. */
+        ASSERT_TRUE(max_val > 0.1f);   /* high sample present */
+        ASSERT_TRUE(min_val < -0.1f);  /* low sample present */
+        gb_free(g);
+    }
+
+    {   /* Test 2: Output level 50% (NR32=0x40) produces smaller peak-to-peak than 100% (NR32=0x20).
+           Uses alternating 0x00/0xFF wave: samples are 0,0,15,15 repeating.
+           At 100%: dac_float(0)=-1.0, dac_float(15)=+1.0 => large peak-to-peak.
+           At 50%:  dac_float(0>>1=0)=-1.0, dac_float(15>>1=7)=−0.067 => smaller peak-to-peak. */
+        float pp_100pct = 0.0f;
+        {
+            GB *g = fresh();
+            gb_apu_set_sample_rate(g, 48000);
+            gb_write8(g, 0xFF26, 0x80);
+            /* Wave RAM: max contrast — 0x00 and 0xFF alternating */
+            for (int i = 0; i < 16; i++)
+                gb_write8(g, 0xFF30 + i, (i & 1) ? 0xFF : 0x00);
+            gb_write8(g, 0xFF1A, 0x80);
+            gb_write8(g, 0xFF1C, 0x20);  /* 100%: bits 6-5 = 01 */
+            gb_write8(g, 0xFF1D, 0x00);
+            gb_write8(g, 0xFF1E, 0x84);  /* trigger, freq_hi=4 */
+            gb_tick(g, 65536 * 2);
+            float buf[4096];
+            int n = gb_audio_read(g, buf, 4096);
+            float hi = -2.0f, lo = 2.0f;
+            for (int i = 0; i < n; i += 2) {
+                if (buf[i] > hi) hi = buf[i];
+                if (buf[i] < lo) lo = buf[i];
+            }
+            pp_100pct = hi - lo;
+            gb_free(g);
+        }
+
+        /* Run at 50% */
+        float pp_50pct = 0.0f;
+        {
+            GB *g = fresh();
+            gb_apu_set_sample_rate(g, 48000);
+            gb_write8(g, 0xFF26, 0x80);
+            for (int i = 0; i < 16; i++)
+                gb_write8(g, 0xFF30 + i, (i & 1) ? 0xFF : 0x00);
+            gb_write8(g, 0xFF1A, 0x80);
+            gb_write8(g, 0xFF1C, 0x40);  /* 50%: bits 6-5 = 10 */
+            gb_write8(g, 0xFF1D, 0x00);
+            gb_write8(g, 0xFF1E, 0x84);  /* trigger, freq_hi=4 */
+            gb_tick(g, 65536 * 2);
+            float buf[4096];
+            int n = gb_audio_read(g, buf, 4096);
+            float hi = -2.0f, lo = 2.0f;
+            for (int i = 0; i < n; i += 2) {
+                if (buf[i] > hi) hi = buf[i];
+                if (buf[i] < lo) lo = buf[i];
+            }
+            pp_50pct = hi - lo;
+            gb_free(g);
+        }
+
+        /* 50% level shifts samples right by 1 => peak-to-peak is smaller than at 100% */
+        ASSERT_TRUE(pp_100pct > 0.1f);               /* 100% has real amplitude */
+        ASSERT_TRUE(pp_50pct > 0.0f);                /* 50% has non-zero amplitude */
+        ASSERT_TRUE(pp_50pct < pp_100pct - 0.05f);   /* 50% clearly smaller peak-to-peak */
+    }
+
+    {   /* Test 3: DAC off (NR30=0x00) + trigger => NR52 bit2 stays 0, output silent */
+        GB *g = fresh();
+        gb_apu_set_sample_rate(g, 48000);
+        gb_write8(g, 0xFF26, 0x80);
+        for (int i = 0; i < 16; i++)
+            gb_write8(g, 0xFF30 + i, 0xFF);  /* all samples = 15 */
+        gb_write8(g, 0xFF1A, 0x00);  /* DAC off */
+        gb_write8(g, 0xFF1C, 0x20);  /* 100% level */
+        gb_write8(g, 0xFF1D, 0x00);
+        gb_write8(g, 0xFF1E, 0x84);  /* trigger attempt */
+        /* CH3 must NOT be enabled: DAC is off */
+        ASSERT_EQ(gb_read8(g, 0xFF26) & 0x04, 0x00);
+
+        /* Output must be silent */
+        gb_tick(g, 65536);
+        float buf[4096];
+        int n = gb_audio_read(g, buf, 4096);
+        ASSERT_TRUE(n > 0);
+        int all_silent = 1;
+        for (int i = 0; i < n; i++) {
+            if (buf[i] > 0.01f || buf[i] < -0.01f) { all_silent = 0; break; }
+        }
+        ASSERT_TRUE(all_silent);
+        gb_free(g);
+    }
+
+    {   /* Test 4: Length counter disables CH3 after expiry */
+        GB *g = fresh();
+        gb_apu_set_sample_rate(g, 48000);
+        gb_write8(g, 0xFF26, 0x80);
+        /* NR31: length load = 255 => counter = 256 - 255 = 1 (expires after 1 length clock) */
+        gb_write8(g, 0xFF1B, 255);
+        gb_write8(g, 0xFF1A, 0x80);   /* DAC on */
+        gb_write8(g, 0xFF1C, 0x20);   /* 100% level */
+        gb_write8(g, 0xFF1D, 0x00);
+        /* NR34: trigger(bit7) + length-enable(bit6) + freq_hi=4 => 0xC4 */
+        gb_write8(g, 0xFF1E, 0xC4);
+        /* Channel should be enabled right after trigger */
+        ASSERT_TRUE(gb_read8(g, 0xFF26) & 0x04);
+
+        /* Advance enough T-cycles to fire at least 2 length clocks (= 2 * 8192 * 2 T-cycles).
+           Length is clocked at 256Hz: every other FS step (FS steps 0,2,4,6).
+           Each FS step = 8192 T-cycles. One length clock = 8192 * 2 T-cycles.
+           2 length clocks = 32768 * 2 T-cycles to be safe. */
+        gb_tick(g, 65536);
+        /* CH3 must be disabled now */
+        ASSERT_EQ(gb_read8(g, 0xFF26) & 0x04, 0x00);
+        gb_free(g);
+    }
+
     TEST_MAIN_END();
 }

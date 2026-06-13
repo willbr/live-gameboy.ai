@@ -78,6 +78,51 @@ static bool cond(const CPU *c, int i) {
                  case 2: return !get_flag(c, FC); default: return get_flag(c, FC); }
 }
 
+/* y: 0 ADD 1 ADC 2 SUB 3 SBC 4 AND 5 XOR 6 OR 7 CP */
+static void alu(GB *g, int y, uint8_t v) {
+    CPU *c = &g->cpu;
+    uint8_t a = c->a;
+    int carry = get_flag(c, FC) ? 1 : 0;
+    switch (y) {
+    case 0: carry = 0; /* fallthrough */
+    case 1: {
+        unsigned r = a + v + (y == 0 ? 0 : carry);
+        unsigned cin = (y == 0 ? 0 : (unsigned)carry);
+        set_flag(c, FH, (a & 0x0F) + (v & 0x0F) + cin > 0x0F);
+        set_flag(c, FC, r > 0xFF);
+        c->a = (uint8_t)r;
+        set_flag(c, FZ, c->a == 0); set_flag(c, FN, false);
+        break;
+    }
+    case 2: carry = 0; /* fallthrough */
+    case 3: case 7: {
+        unsigned cin = (y == 2 || y == 7) ? 0 : (unsigned)carry;
+        unsigned r = a - v - cin;
+        set_flag(c, FH, (a & 0x0F) < (v & 0x0F) + cin);
+        set_flag(c, FC, (unsigned)a < (unsigned)v + cin);
+        set_flag(c, FZ, (uint8_t)r == 0); set_flag(c, FN, true);
+        if (y != 7) c->a = (uint8_t)r;       /* CP discards result */
+        break;
+    }
+    case 4: c->a = a & v; c->f = 0; set_flag(c, FZ, c->a == 0); set_flag(c, FH, true); break;
+    case 5: c->a = a ^ v; c->f = 0; set_flag(c, FZ, c->a == 0); break;
+    case 6: c->a = a | v; c->f = 0; set_flag(c, FZ, c->a == 0); break;
+    }
+}
+
+static uint8_t inc8(CPU *c, uint8_t v) {
+    v++;
+    set_flag(c, FZ, v == 0); set_flag(c, FN, false);
+    set_flag(c, FH, (v & 0x0F) == 0);
+    return v;
+}
+static uint8_t dec8(CPU *c, uint8_t v) {
+    v--;
+    set_flag(c, FZ, v == 0); set_flag(c, FN, true);
+    set_flag(c, FH, (v & 0x0F) == 0x0F);
+    return v;
+}
+
 static void exec(GB *g, uint8_t op);
 
 static void halt(GB *g) { g->cpu.halted = true; }
@@ -98,7 +143,7 @@ int gb_step(GB *g) {
     exec(g, op);
 
     /* Temporary references to silence -Werror=unused-function until later tasks consume these */
-    (void)get_flag; (void)cond; (void)get_rp;
+    (void)cond; (void)get_rp;
 
     return (int)(g->cycles - start);
 }
@@ -116,6 +161,10 @@ static void exec(GB *g, uint8_t op) {
         set_r(g, y, fetch8(g));
         return;
     }
+    if (x == 2) { alu(g, y, get_r(g, z)); return; }          /* 0x80-0xBF */
+    if (x == 3 && z == 6) { alu(g, y, fetch8(g)); return; }  /* d8 forms C6,CE,D6,DE,E6,EE,F6,FE */
+    if (x == 0 && z == 4) { set_r(g, y, inc8(c, get_r(g, y))); return; }  /* INC r */
+    if (x == 0 && z == 5) { set_r(g, y, dec8(c, get_r(g, y))); return; }  /* DEC r */
 
     switch (op) {
     case 0x00: break;
@@ -137,6 +186,7 @@ static void exec(GB *g, uint8_t op) {
     /* needed by the test: LD rr,d16 (full family in Task 5) */
     case 0x01: case 0x11: case 0x21: case 0x31:
         set_rp(c, (op >> 4) & 3, fetch16(g)); break;
+    case 0x37: set_flag(c, FN, false); set_flag(c, FH, false); set_flag(c, FC, true); break;
     case 0xC3: { uint16_t t = fetch16(g); internal(g); c->pc = t; break; }
     case 0xC5: push16(g, BC(c)); break;
     case 0xD5: push16(g, DE(c)); break;

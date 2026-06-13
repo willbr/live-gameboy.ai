@@ -35,7 +35,13 @@ static void io_write(GB *gb, uint8_t r, uint8_t v) {
 }
 
 uint8_t gb_read8(GB *gb, uint16_t a) {
-    if (a < 0x8000)  return gb->rom[a % gb->rom_size];
+    if (a < 0x4000)  return gb->rom[a];
+    if (a < 0x8000) {
+        /* Banked ROM: use rom_bank for MBC1/MBC5/no-MBC */
+        uint32_t off = (uint32_t)gb->rom_bank * 0x4000u + (a - 0x4000u);
+        if (off < gb->rom_size) return gb->rom[off];
+        return 0xFF;
+    }
     if (a < 0xA000)  return gb->vram[a - 0x8000];
     if (a < 0xC000)  return 0xFF;                       /* cart RAM: none yet */
     if (a < 0xE000)  return gb->wram[a - 0xC000];
@@ -48,7 +54,21 @@ uint8_t gb_read8(GB *gb, uint16_t a) {
 }
 
 void gb_write8(GB *gb, uint16_t a, uint8_t v) {
-    if (a < 0x8000)  return;                            /* MBC writes: later plan */
+    /* MBC1 register writes */
+    if (a < 0x8000) {
+        if (gb->mbc_type >= 0x01 && gb->mbc_type <= 0x03) {   /* MBC1 */
+            if (a >= 0x2000 && a < 0x4000) {
+                /* ROM bank number (lower 5 bits); 0 -> 1 */
+                uint8_t bank = v & 0x1F;
+                if (bank == 0) bank = 1;
+                gb->rom_bank = bank;
+            }
+            /* 0x0000-0x1FFF: RAM enable (ignored, no RAM)    */
+            /* 0x4000-0x5FFF: upper bits / RAM bank (ignored) */
+            /* 0x6000-0x7FFF: mode (ignored)                  */
+        }
+        return;
+    }
     if (a < 0xA000)  { gb->vram[a - 0x8000] = v; return; }
     if (a < 0xC000)  return;
     if (a < 0xE000)  { gb->wram[a - 0xC000] = v; return; }

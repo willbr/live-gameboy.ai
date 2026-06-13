@@ -18,6 +18,8 @@ typedef struct GB {
 
     uint8_t *rom;
     size_t rom_size;
+    uint8_t mbc_type;       /* cart header 0x147 */
+    uint8_t rom_bank;       /* current bank mapped at 0x4000-0x7FFF */
     uint8_t vram[0x2000];
     uint8_t wram[0x2000];
     uint8_t oam[0xA0];

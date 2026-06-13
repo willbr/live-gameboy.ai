@@ -20,6 +20,8 @@ bool gb_load_rom(GB *gb, const uint8_t *data, size_t size) {
     if (!gb->rom) return false;
     memcpy(gb->rom, data, size);
     gb->rom_size = size;
+    gb->mbc_type = data[0x147];
+    gb->rom_bank = 1;
     return true;
 }
 
@@ -42,6 +44,7 @@ void gb_reset(GB *gb) {
     gb->tima = 0; gb->tma = 0; gb->tac = 0xF8;
     gb->serial_len = 0;
     gb->cycles = 0;
+    gb->rom_bank = 1;
 }
 
 void gb_tick(GB *gb, int tcycles) {

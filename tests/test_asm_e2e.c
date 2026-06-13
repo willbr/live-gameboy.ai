@@ -905,6 +905,53 @@ static void test_e2e_draw_tile(void)
     asm_free(&r);
 }
 
+/* Task 0: a Main: global makes asm_assemble() write JP Main at 0x0100,
+ * so a CLI-built ROM boots without any manual entry patch. */
+static void test_e2e_entry_autopatch(void)
+{
+    const char *src =
+        "SECTION \"code\", ROM0\n"
+        "Main:\n"
+        "    xor a\n"
+        "    ldh ($40), a\n"      /* LCDC off so VRAM writes aren't mode-3 blocked */
+        "    ld a, $FF\n"
+        "    ld hl, $8000\n"
+        "    ld b, 16\n"
+        ".fill:\n"
+        "    ld (hl+), a\n"
+        "    dec b\n"
+        "    jr nz, .fill\n"
+        "    ld hl, $9800\n"
+        "    xor a\n"
+        "    ld (hl), a\n"
+        "    ld a, $E4\n"
+        "    ldh ($47), a\n"      /* BGP */
+        "    ld a, $91\n"
+        "    ldh ($40), a\n"      /* LCDC on */
+        "Spin:\n"
+        "    jr Spin\n";
+
+    AsmResult r = asm_assemble(src, "entry_autopatch.asm");
+    ASSERT_TRUE(r.ok);
+
+    /* The assembler itself must have written JP Main at 0x0100 — NO manual patch. */
+    ASSERT_EQ(r.rom[0x0100], 0xC3);          /* JP */
+    const AsmSymbol *m = find_sym(&r, "Main");
+    ASSERT_TRUE(m != NULL);
+    ASSERT_EQ(r.rom[0x0101], (m->addr & 0xFF));
+    ASSERT_EQ(r.rom[0x0102], ((m->addr >> 8) & 0xFF));
+
+    GB *gb = gb_new();
+    gb_load_rom(gb, r.rom, r.rom_size);
+    gb_reset(gb);
+    run_gb(gb, 10, 2000000);
+    const uint8_t *fb = gb_framebuffer(gb);
+    ASSERT_EQ(fb[0], 3);                      /* reached our code, drew a dark tile */
+
+    gb_free(gb);
+    asm_free(&r);
+}
+
 /* =========================================================================
  * Main
  * ======================================================================= */
@@ -935,6 +982,7 @@ int main(void)
     /* Task 6 tests: assemble -> run on real emulator -> assert */
     test_e2e_serial();
     test_e2e_draw_tile();
+    test_e2e_entry_autopatch();
 
     TEST_MAIN_END();
 }

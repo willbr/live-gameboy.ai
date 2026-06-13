@@ -1775,6 +1775,22 @@ AsmResult asm_assemble_mem(const char *src, const char *filename,
             r.rom[HDR_HCHK_ADDR] = x;
         }
 
+        /* 0x0100-0x0102: entry-point jump.
+         * gb_reset() starts PC=0x0100; the bytes 0x0104+ are the Nintendo
+         * logo (data, not code). If the source defines a ROM0 global "Main",
+         * write JP Main here so the CPU reaches user code. Mirrors the live
+         * engine's patch_entry() so CLI- and IDE-built ROMs behave identically.
+         * Done before the global checksum so that checksum stays valid. */
+        for (int i = 0; i < st.count; i++) {
+            if (strcmp(st.syms[i].name, "Main") == 0 && st.syms[i].defined
+                && st.syms[i].bank == 0 && st.syms[i].addr < 0x4000u) {
+                r.rom[0x0100] = 0xC3u;                              /* JP nn */
+                r.rom[0x0101] = (uint8_t)(st.syms[i].addr & 0xFFu);
+                r.rom[0x0102] = (uint8_t)((st.syms[i].addr >> 8) & 0xFFu);
+                break;
+            }
+        }
+
         /* 0x014E-0x014F: global checksum (16-bit big-endian, all bytes except 0x014E/0x014F) */
         {
             uint32_t gsum = 0;

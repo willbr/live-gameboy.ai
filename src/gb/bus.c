@@ -6,6 +6,7 @@ void    gb_timer_write(GB *gb, uint16_t addr, uint8_t v);
 
 static uint8_t io_read(GB *gb, uint8_t r) {
     switch (r) {
+    case 0x00: return gb_joypad_read(gb);
     case 0x04: case 0x05: case 0x06: case 0x07:
         return gb_timer_read(gb, 0xFF00 | r);
     case 0x0F: return gb->iflag | 0xE0;
@@ -18,6 +19,7 @@ static uint8_t io_read(GB *gb, uint8_t r) {
 
 static void io_write(GB *gb, uint8_t r, uint8_t v) {
     switch (r) {
+    case 0x00: gb_joypad_write(gb, v); break;
     case 0x01: gb->io[0x01] = v; break;                       /* SB */
     case 0x02:                                                 /* SC */
         if (v & 0x80) {  /* transfer start: capture for test ROMs */

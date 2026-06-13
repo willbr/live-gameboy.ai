@@ -46,6 +46,7 @@ void gb_reset(GB *gb) {
     gb->cycles = 0;
     gb->rom_bank = 1;
     gb_ppu_reset(gb);
+    gb_joypad_reset(gb);
 }
 
 void gb_tick(GB *gb, int tcycles) {

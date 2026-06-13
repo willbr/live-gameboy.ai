@@ -48,6 +48,10 @@ typedef struct GB {
     uint8_t  spr_idx[10];     /* OAM entry indices, in scan order */
     int      spr_count;
 
+    /* joypad */
+    uint8_t buttons;     /* 1=pressed; bit0 A,1 B,2 Sel,3 Start,4 R,5 L,6 Up,7 Down */
+    uint8_t joyp_sel;    /* last-written P1 select bits (bit4 dirs, bit5 actions) */
+
     /* timer */
     uint16_t div16;        /* internal divider; DIV (FF04) is its high byte */
     uint8_t tima, tma, tac;
@@ -74,6 +78,12 @@ bool    gb_ppu_vram_blocked(const GB *gb);     /* true => CPU VRAM access denied
 bool    gb_ppu_oam_blocked(const GB *gb);      /* true => CPU OAM access denied */
 void    gb_ppu_reset(GB *gb);
 const uint8_t *gb_framebuffer(const GB *gb);    /* 160*144 shades, for the shell */
+
+/* joypad (joypad.c) */
+void    gb_set_buttons(GB *gb, uint8_t mask);   /* 1=pressed; see bit layout in gb.h */
+uint8_t gb_joypad_read(GB *gb);                  /* FF00 */
+void    gb_joypad_write(GB *gb, uint8_t v);      /* FF00 (select bits) */
+void    gb_joypad_reset(GB *gb);
 
 /* internal: timer (timer.c) */
 uint8_t gb_timer_read(GB *gb, uint16_t addr);

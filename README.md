@@ -1,7 +1,9 @@
 # live-gameboy
 
-A Game Boy emulator + live-coding IDE in pure C and SDL3. Edit a function or
+A complete Game Boy emulator + live-coding IDE in pure C and SDL3. Edit a function or
 paint a tile while the game runs — state intact. PICO-8 spirit, real DMG ROMs.
+
+**Status: complete — emulator + live-coding IDE.**
 
 Design: docs/superpowers/specs/2026-06-12-live-gameboy-design.md
 
@@ -12,7 +14,7 @@ Design: docs/superpowers/specs/2026-06-12-live-gameboy-design.md
 - [x] Milestone 3: built-in SM83 assembler (`gbasm`) — RGBDS-inspired syntax, two-pass, build database
 - [x] Milestone 4: live patching — edit a function in a running game, state intact (headless engine; editor UI in M6)
 - [x] Milestone 5: live tile editing — paint a pixel, the running screen updates via VRAM provenance (PNG import/export); headless engine, editor UI in M6
-- [ ] Milestone 6: debug panels, ROM export
+- [x] Milestone 6: PICO-8-style IDE — software-rendered debug panels (registers, VRAM tiles, memory hex, code pane, tile editor) in a 640×432 SDL3 window; headless `--ide-shot` gate; `examples/demo.asm` scrolling background demo
 
 ## Build
 
@@ -28,6 +30,37 @@ Design: docs/superpowers/specs/2026-06-12-live-gameboy-design.md
     ./live-gameboy --shot game.gb out.png [frames] [scale]   # headless screenshot
 
 Keys: Z=A, X=B, Enter=Start, RShift=Select, Arrows=D-pad, Esc=quit.
+
+## IDE
+
+The live-coding IDE renders a 640×432 canvas with the game screen surrounded by
+debug panels: CPU registers/flags, VRAM tile viewer, source code pane, tile
+editor, and memory hex view.  The entire canvas is software-rendered (SDL-free
+render path), so it can be screenshotted headlessly for CI.
+
+    make live-gameboy-ide        # build the IDE (needs SDL3)
+    ./live-gameboy-ide examples/demo.asm   # interactive window
+    make ide-shot                # headless screenshot -> build/ide.png
+
+**Controls:**
+
+| Key | Action |
+|-----|--------|
+| Z | GB A button |
+| X | GB B button |
+| Enter | GB Start |
+| RShift | GB Select |
+| Arrow keys | GB D-pad |
+| F5 | Reload source from disk and hot-swap (asm mode) |
+| 0-3 | Set paint colour (0=lightest, 3=darkest) |
+| Esc / Q | Quit |
+
+**Mouse:**
+- Click in the VRAM tile viewer to select a tile into the tile editor.
+- Click in the tile editor to paint a pixel with the current colour.
+
+The live-edit workflow: edit `game.asm` in your editor, press F5 in the IDE,
+watch the running game hot-swap with RAM/VRAM state intact.
 
 ## Assemble
 

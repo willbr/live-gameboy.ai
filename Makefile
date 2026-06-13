@@ -83,11 +83,15 @@ SHELL_SRC  = $(wildcard src/shell/*.c)
 live-gameboy: $(SHELL_SRC) $(GB_OBJ)
 	$(CC) $(CFLAGS) $(SDL_CFLAGS) $(SHELL_SRC) $(GB_OBJ) $(SDL_LIBS) -lz -o $@
 
+# --- IDE shell (SDL3 interactive IDE) ---
+live-gameboy-ide: src/ide/main.c $(IDE_OBJ) $(GB_OBJ) $(ASM_OBJ) $(LIVE_OBJ)
+	$(CC) $(CFLAGS) $(SDL_CFLAGS) src/ide/main.c $(IDE_OBJ) $(GB_OBJ) $(ASM_OBJ) $(LIVE_OBJ) $(SDL_LIBS) -lz -o $@
+
 # headless screenshot for verification/CI (still links SDL but never opens a window)
 shell-shot: live-gameboy
 	./live-gameboy --shot roms/dmg-acid2.gb build/shell-acid2.png 60 2
 
 clean:
-	rm -rf $(BUILD) live-gameboy gbasm
+	rm -rf $(BUILD) live-gameboy live-gameboy-ide gbasm
 
-.PHONY: all test blargg roms clean acid2 shell-shot sound gbasm asm-demo
+.PHONY: all test blargg roms clean acid2 shell-shot sound gbasm asm-demo live-gameboy-ide

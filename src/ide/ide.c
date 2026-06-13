@@ -21,6 +21,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
+#include <stdbool.h>
 
 /* -------------------------------------------------------------------------
  * IDE state
@@ -31,6 +32,7 @@ struct IdeState {
     GB          *gb;        /* always non-NULL after ide_new */
     char        *source;    /* .asm source text (heap), or NULL */
     int          selected_tile;
+    int          paint_color; /* active paint color 0..3 */
     char         status[256];
     int          frame_counter;
     uint16_t     mem_base;  /* base address for hex panel (default 0xC000) */
@@ -52,6 +54,24 @@ static char *read_file(const char *path) {
     size_t got = fread(buf, 1, (size_t)len, f);
     fclose(f);
     buf[got] = '\0';
+    return buf;
+}
+
+/* read_file_binary — read a binary file into a heap buffer and return its byte
+ * length in *out_len.  Returns NULL on error.  Caller must free the buffer. */
+static uint8_t *read_file_binary(const char *path, size_t *out_len) {
+    FILE *f = fopen(path, "rb");
+    if (!f) return NULL;
+    fseek(f, 0, SEEK_END);
+    long len = ftell(f);
+    rewind(f);
+    if (len < 0) { fclose(f); return NULL; }
+    uint8_t *buf = (uint8_t *)malloc((size_t)len + 1);
+    if (!buf) { fclose(f); return NULL; }
+    size_t got = fread(buf, 1, (size_t)len, f);
+    fclose(f);
+    buf[got] = '\0';
+    if (out_len) *out_len = (size_t)len;
     return buf;
 }
 
@@ -96,7 +116,8 @@ IdeState *ide_new(const char *path) {
         snprintf(s->status, sizeof(s->status), "Loaded: %s", path);
     } else {
         /* .gb mode: load ROM into a fresh GB */
-        char *rom = read_file(path);
+        size_t rom_size = 0;
+        uint8_t *rom = read_file_binary(path, &rom_size);
         if (!rom) {
             snprintf(s->status, sizeof(s->status), "Error: cannot open %s", path);
             free(s);
@@ -108,7 +129,9 @@ IdeState *ide_new(const char *path) {
             free(s);
             return NULL;
         }
-        if (!gb_load_rom(gb, (const uint8_t *)rom, strlen(rom))) {
+        /* Use rom_size (actual byte count) not strlen(), which would stop at any
+         * 0x00 byte in binary ROM data and report a truncated length. */
+        if (!gb_load_rom(gb, rom, rom_size)) {
             /* if that fails, just use whatever rom bytes were there */
         }
         free(rom);
@@ -150,6 +173,152 @@ int ide_selected_tile(IdeState *s) {
 
 const char *ide_status(IdeState *s) {
     return s ? s->status : "";
+}
+
+bool ide_is_asm(IdeState *s) {
+    return s && s->live != NULL;
+}
+
+void ide_set_paint_color(IdeState *s, int color) {
+    if (!s) return;
+    if (color < 0) color = 0;
+    if (color > 3) color = 3;
+    s->paint_color = color;
+}
+
+int ide_paint_color(IdeState *s) {
+    return s ? s->paint_color : 0;
+}
+
+/* -------------------------------------------------------------------------
+ * Panel geometry — single source of truth used by both ide_render and the SDL
+ * shell.  Keep these constants in sync with the draw calls in ide_render.
+ * ------------------------------------------------------------------------- */
+
+/* Panel rectangles: {x, y, w, h} */
+static const int PANEL_RECTS[7][4] = {
+    {  8,   8, 336, 304 },  /* PANEL_GAME        */
+    { 352,  8, 280, 152 },  /* PANEL_REGISTERS   */
+    { 352, 168, 280, 148 }, /* PANEL_VRAM_TILES  */
+    {  8, 320, 336,  54 },  /* PANEL_CODE        */
+    { 352, 320, 280,  54 }, /* PANEL_TILE_EDITOR */
+    {  8, 382, 624,  40 },  /* PANEL_MEM_HEX     */
+    {  8, 424, 624,   8 },  /* PANEL_STATUS      */
+};
+
+void ide_panel_rect(IdePanel panel, int *x, int *y, int *w, int *h) {
+    int idx = (int)panel;
+    if (idx < 0 || idx >= 7) {
+        if (x) *x = 0; if (y) *y = 0; if (w) *w = 0; if (h) *h = 0;
+        return;
+    }
+    if (x) *x = PANEL_RECTS[idx][0];
+    if (y) *y = PANEL_RECTS[idx][1];
+    if (w) *w = PANEL_RECTS[idx][2];
+    if (h) *h = PANEL_RECTS[idx][3];
+}
+
+/* Tile editor zoom must match ide_render's Panel[4] zoom value */
+#define TILE_EDITOR_ZOOM  5  /* each GB pixel -> 5x5 canvas pixels */
+#define VRAM_TILE_COLS   16  /* columns of tiles in VRAM viewer */
+#define VRAM_TILE_SCALE   1  /* 1:1 pixels, gap of 1 between tiles */
+
+bool ide_mouse_paint(IdeState *s, int mx, int my) {
+    if (!s || !s->live) return false;
+
+    int px, py, pw, ph;
+    ide_panel_rect(PANEL_TILE_EDITOR, &px, &py, &pw, &ph);
+
+    /* Inner origin of the zoomed tile within the panel (matches ide_render) */
+    int ox = px + 4;
+    int oy = py + 12;
+
+    /* Check bounds: the zoomed tile is 8*zoom x 8*zoom pixels */
+    int tile_w = 8 * TILE_EDITOR_ZOOM;
+    int tile_h = 8 * TILE_EDITOR_ZOOM;
+    if (mx < ox || mx >= ox + tile_w) return false;
+    if (my < oy || my >= oy + tile_h) return false;
+
+    int tx = (mx - ox) / TILE_EDITOR_ZOOM;
+    int ty = (my - oy) / TILE_EDITOR_ZOOM;
+
+    /* tile_paint needs an asset_path — use NULL/"" to mean "any asset" is not
+     * supported by the API; we pass the path stored in the live result. */
+    AsmResult *res = live_result(s->live);
+    if (!res || res->nassets == 0) return false;
+
+    /* Find the asset that contains the selected tile */
+    int ti = s->selected_tile;
+    int offset = 0;
+    int asset_idx = -1;
+    for (int i = 0; i < res->nassets; i++) {
+        int ntiles = (int)(res->assets[i].size / 16);
+        if (ti < offset + ntiles) {
+            asset_idx = i;
+            ti -= offset;  /* tile index within this asset */
+            break;
+        }
+        offset += ntiles;
+    }
+    if (asset_idx < 0) return false;
+
+    char err[128] = "";
+    return tile_paint(s->live, res->assets[asset_idx].path,
+                      ti, tx, ty, (uint8_t)s->paint_color, err, sizeof(err));
+}
+
+int ide_select_tile_at(IdeState *s, int mx, int my) {
+    if (!s) return -1;
+
+    int px, py, pw, ph;
+    ide_panel_rect(PANEL_VRAM_TILES, &px, &py, &pw, &ph);
+
+    /* Inner origin (matches ide_render) */
+    int ox = px + 4;
+    int oy = py + 12;
+    int cell = 8 * VRAM_TILE_SCALE + 1;  /* tile cell width including gap */
+
+    if (mx < ox || my < oy) return -1;
+
+    int col = (mx - ox) / cell;
+    int row = (my - oy) / cell;
+    if (col < 0 || col >= VRAM_TILE_COLS) return -1;
+
+    int max_rows = (ph - 14) / cell;
+    if (row < 0 || row >= max_rows) return -1;
+
+    int idx = row * VRAM_TILE_COLS + col;
+    if (idx < 0 || idx >= 64) return -1;
+
+    ide_select_tile(s, idx);
+    return idx;
+}
+
+bool ide_reload_from_file(IdeState *s, const char *path) {
+    if (!s || !s->live || !path) return false;
+
+    char *new_src = read_file(path);
+    if (!new_src) {
+        snprintf(s->status, sizeof(s->status), "Reload error: cannot read %s", path);
+        return false;
+    }
+
+    PatchReport rep = live_reload(s->live, new_src);
+    free(new_src);
+
+    /* Build a short status string from the report */
+    bool refused = rep.any_refused;
+    if (refused) {
+        snprintf(s->status, sizeof(s->status), "RELOAD REFUSED (%d patches)", rep.count);
+    } else {
+        int changed = 0;
+        for (int i = 0; i < rep.count; i++)
+            if (rep.items[i].kind != PATCH_UNCHANGED) changed++;
+        snprintf(s->status, sizeof(s->status), "Reloaded: %d/%d patched", changed, rep.count);
+    }
+
+    patch_report_free(&rep);
+    return !refused;
 }
 
 /* -------------------------------------------------------------------------

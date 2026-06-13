@@ -19,6 +19,7 @@
 
 #include "ui.h"
 #include "../gb/gb.h"
+#include <stdbool.h>
 
 typedef struct IdeState IdeState;
 
@@ -51,5 +52,51 @@ int       ide_selected_tile(IdeState *s);
 
 /* ide_status — null-terminated status string (patch report / info). */
 const char *ide_status(IdeState *s);
+
+/* -------------------------------------------------------------------------
+ * Extended accessors added for SDL interactive shell (Task 3)
+ * ------------------------------------------------------------------------- */
+
+/* Panel identifiers for ide_panel_rect() */
+typedef enum {
+    PANEL_GAME        = 0,
+    PANEL_REGISTERS   = 1,
+    PANEL_VRAM_TILES  = 2,
+    PANEL_CODE        = 3,
+    PANEL_TILE_EDITOR = 4,
+    PANEL_MEM_HEX     = 5,
+    PANEL_STATUS      = 6
+} IdePanel;
+
+/* ide_panel_rect — return the pixel rectangle of the named panel.
+ * All out-pointers are optional (may be NULL). */
+void ide_panel_rect(IdePanel panel, int *x, int *y, int *w, int *h);
+
+/* ide_set_paint_color — set the active paint color (0..3) used by ide_mouse_paint. */
+void ide_set_paint_color(IdeState *s, int color);
+
+/* ide_paint_color — return the current paint color (0..3). */
+int  ide_paint_color(IdeState *s);
+
+/* ide_mouse_paint — given a canvas-space mouse position inside the tile editor
+ * panel, compute the tile pixel (tx,ty), then call tile_paint on the selected
+ * tile.  Does nothing if (mx,my) is outside the tile editor panel.
+ * Returns true on a successful paint, false if out-of-bounds or live==NULL. */
+bool ide_mouse_paint(IdeState *s, int mx, int my);
+
+/* ide_select_tile_at — given a canvas-space mouse position inside the VRAM
+ * tiles panel, compute the tile index and call ide_select_tile.
+ * Returns the selected tile index, or -1 if (mx,my) is outside the panel. */
+int  ide_select_tile_at(IdeState *s, int mx, int my);
+
+/* ide_reload_from_file — re-read the source file on disk and call live_reload.
+ * Sets ide_status() to a summary of the PatchReport.
+ * No-op (returns false) if the session is not in .asm mode.
+ * Returns true on success. */
+bool ide_reload_from_file(IdeState *s, const char *path);
+
+/* ide_is_asm — return true if the session was opened from a .asm file
+ * (i.e. has a live session and source text). */
+bool ide_is_asm(IdeState *s);
 
 #endif /* IDE_H */

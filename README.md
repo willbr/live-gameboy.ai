@@ -10,7 +10,7 @@ Design: docs/superpowers/specs/2026-06-12-live-gameboy-design.md
 - [x] Milestone 1: headless libgb core — passes blargg cpu_instrs, instr_timing
 - [x] Milestone 2: SDL3 shell, pixel-FIFO PPU, APU
 - [x] Milestone 3: built-in SM83 assembler (`gbasm`) — RGBDS-inspired syntax, two-pass, build database
-- [ ] Milestone 4: live patching
+- [x] Milestone 4: live patching — edit a function in a running game, state intact (headless engine; editor UI in M6)
 - [ ] Milestone 5: live tile editing
 - [ ] Milestone 6: debug panels, ROM export
 
@@ -40,6 +40,25 @@ Game Boy ROM with a complete cartridge header (logo, checksums):
 
 See `examples/hello.asm` for a working serial-output demo.  The `--sym` flag
 writes a `BB:AAAA Name` symbol file for use with debuggers.
+
+## Live patching
+
+The M4 live-patching engine (`src/live/`) lets you reload a function's source
+while the emulator keeps running — RAM, VRAM, and CPU registers are never
+touched. The engine classifies each change:
+
+- **IN_PLACE** — new bytes fit the function's existing slot; the ROM is
+  overwritten at a safe point (PC not inside the patched range).
+- **RELOCATED** — the function outgrew its slot; a JP trampoline is written at
+  the old entry and the new body is placed at fresh ROM space.
+- **REFUSED** — assembly failed or the change is unsafe; ROM and state are
+  untouched, so the game continues unaffected.
+
+The full scenario is headless-tested in `tests/test_live_e2e.c`: five
+sequential reloads (in-place → reloc → refused → in-place recovery) with the
+$C000 counter verified to never decrease across transitions. The public API is
+`live_new` / `live_reload` / `live_soft_reload` / `live_gb` / `live_free` /
+`patch_report_free` (see `src/live/live.h`).
 
 ## Sound
 

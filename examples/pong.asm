@@ -265,7 +265,7 @@ DrawSprites:
 
 ; ====================== SOUND ======================
 ; SfxTone — short CH1 (pulse) blip. In: D=freq hi (bits2-0), E=freq lo.
-; Clobbers A,D,E; preserves B,C,HL. The freq is the live-edit surface.
+; Clobbers A; reads (preserves) D,E; preserves B,C,HL. Freq is the live-edit surface.
 SfxTone:
     xor a
     ldh ($10), a             ; NR10 = no sweep

@@ -63,7 +63,9 @@ static void test_pong_paddle_up(void) {
     gb_free(gb); asm_free(&r);
 }
 
-/* APU is powered on by init. */
+/* Init powers on the APU and routes all channels to both speakers.
+ * NR51=$FF distinguishes our init from the DMG reset default ($F3), so this
+ * actually exercises the added power-on block (not just the reset state). */
 static void test_pong_apu_on(void) {
     AsmResult r = ex_assemble("examples/pong.asm");
     ASSERT_TRUE(r.ok);
@@ -71,7 +73,8 @@ static void test_pong_apu_on(void) {
     gb_load_rom(gb, r.rom, r.rom_size);
     gb_reset(gb);
     ex_run(gb, 5, 2000000);
-    ASSERT_TRUE(gb_read8(gb, 0xFF26) & 0x80);
+    ASSERT_TRUE(gb_read8(gb, 0xFF26) & 0x80);   /* NR52 power bit */
+    ASSERT_EQ(gb_read8(gb, 0xFF25), 0xFF);      /* NR51 set by init (reset=$F3) */
     gb_free(gb); asm_free(&r);
 }
 

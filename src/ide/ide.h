@@ -3,16 +3,22 @@
 /*
  * ide.h — IDE state + panel rendering.
  *
- * Canvas dimensions: 640 x 432 pixels (fixed convention).
+ * Canvas dimensions: 1024 x 720 pixels (fixed convention).
  *
  * Layout:
- *   Top-left  (  8,  8) w=336 h=304  — Game screen  (160x144 @ scale=2 + 8px pad)
- *   Top-right (352,  8) w=280 h=152  — Registers / flags / PPU
- *   Mid-right (352,168) w=280 h=144  — VRAM tile viewer (64 tiles in 8x8 grid, each 8x8 with 2x scale)
- *   Bottom    (  8,320) w=624 h= 56  — Code pane (source lines)
- *   Bottom-R  (352,320) w=280 h= 56  — Tile editor (selected tile zoomed) — shares row w/ code
- *   Bottom    (  8,386) w=624 h= 38  — Memory hex panel
- *   Status    (  8,424) w=624 h=  8  — Status line
+ *   [0]  Game screen    (  8,  8) w=336 h=304
+ *   [1]  Registers      (352,  8) w=320 h=120
+ *   [2]  VRAM tiles     (680,  8) w=336 h=148
+ *   [3]  Code pane      (  8,320) w=336 h=150
+ *   [4]  Tile editor    (  8,478) w=336 h=120
+ *   [5]  Mem hex        (  8,606) w=1008 h=80
+ *   [6]  Status line    (  8,706) w=1008 h=8
+ *   [7]  Exec           (352,136) w=320 h=62
+ *   [8]  Disasm         (352,206) w=320 h=392
+ *   [9]  Palette        (680,164) w=336 h=36
+ *   [10] OAM            (680,208) w=336 h=192
+ *   [11] Tilemap        (680,408) w=336 h=190
+ *   [12] Addr input     (  8,690) w=1008 h=12
  *
  * Note: panels are clipped to canvas; ide_render must not write outside canvas.
  */
@@ -82,6 +88,10 @@ const char *ide_status(IdeState *s);
  * Extended accessors added for SDL interactive shell (Task 3)
  * ------------------------------------------------------------------------- */
 
+/* Canvas dimensions */
+#define IDE_CANVAS_W 1024
+#define IDE_CANVAS_H  720
+
 /* Panel identifiers for ide_panel_rect() */
 typedef enum {
     PANEL_GAME        = 0,
@@ -90,7 +100,14 @@ typedef enum {
     PANEL_CODE        = 3,
     PANEL_TILE_EDITOR = 4,
     PANEL_MEM_HEX     = 5,
-    PANEL_STATUS      = 6
+    PANEL_STATUS      = 6,
+    PANEL_EXEC        = 7,
+    PANEL_DISASM      = 8,
+    PANEL_PALETTE     = 9,
+    PANEL_OAM         = 10,
+    PANEL_TILEMAP     = 11,
+    PANEL_ADDR_INPUT  = 12,
+    PANEL_COUNT
 } IdePanel;
 
 /* ide_panel_rect — return the pixel rectangle of the named panel.

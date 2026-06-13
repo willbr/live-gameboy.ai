@@ -1,12 +1,11 @@
 /*
- * test_ide_render.c — Milestone 6 Task 2: IDE render smoke test.
+ * test_ide_render.c — IDE render smoke test.
  *
  * Creates a small .asm program, runs it through ide_new + ide_step_frame,
- * renders the IDE panels into a 640x432 canvas, and asserts:
+ * renders the IDE panels into a IDE_CANVAS_W x IDE_CANVAS_H canvas, and asserts:
  *   1. The game-screen region (x=16..336, y=18..312) has at least one
  *      non-background pixel (the tile rendered and blitted).
- *   2. The registers panel region (x=352..632, y=8..160) has at least one
- *      bright text pixel (the CPU text was drawn).
+ *   2. The registers panel region has at least one bright text pixel.
  *   3. ui_save_png to build/test_ide.png returns 0 and the file is readable.
  *   4. ide_shot to build/test_ide_shot.png returns 0 and that file exists too.
  */
@@ -150,7 +149,7 @@ static void test_ide_render(void) {
         ide_step_frame(s);
 
     /* Render */
-    Canvas c = canvas_new(640, 432);
+    Canvas c = canvas_new(IDE_CANVAS_W, IDE_CANVAS_H);
     ASSERT_TRUE(c.px != NULL);
     if (!c.px) { ide_free(s); return; }
 
@@ -163,10 +162,10 @@ static void test_ide_render(void) {
     int game_non_bg = region_has_non_bg(&c, 16, 18, 320, 288);
     ASSERT_TRUE(game_non_bg);
 
-    /* 2. Registers panel region (x=352..632, y=8..160) must have some bright text.
-     *    COL_TITLE = 0xE0E0FFFF -> R=0xE0, G=0xE0.  The title "REGISTERS" and
+    /* 2. Registers panel region (x=352..672, y=8..128) must have some bright text.
+     *    COL_TITLE = 0xE0E0FFFF -> R=0xE0.  The title "REGISTERS" and
      *    register lines will have pixels with R > 0xC0. */
-    int regs_has_text = region_has_bright_red(&c, 352, 8, 632, 160, 0xC0);
+    int regs_has_text = region_has_bright_red(&c, 352, 8, 672, 128, 0xC0);
     ASSERT_TRUE(regs_has_text);
 
     /* 3. Save PNG */

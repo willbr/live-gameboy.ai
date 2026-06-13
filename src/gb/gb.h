@@ -56,6 +56,24 @@ typedef struct GB {
     uint16_t div16;        /* internal divider; DIV (FF04) is its high byte */
     uint8_t tima, tma, tac;
 
+    /* apu */
+    uint8_t apu_reg[0x30];     /* raw FF10-FF3F backing (incl wave RAM at +0x20) */
+    bool    apu_power;
+    int     fs_step;           /* frame sequencer step 0..7 */
+    uint16_t apu_div_prev;     /* prev DIV for 512Hz edge detection */
+    /* channels */
+    struct { uint16_t timer; uint8_t duty_pos; uint8_t vol; uint8_t env_timer;
+             uint16_t len; bool enabled; bool dac;
+             uint8_t sweep_timer; uint16_t sweep_shadow; bool sweep_enabled; } ch1, ch2;
+    struct { uint16_t timer; uint8_t pos; uint16_t len; bool enabled; bool dac; } ch3;
+    struct { uint16_t timer; uint8_t vol; uint8_t env_timer; uint16_t len;
+             uint16_t lfsr; bool enabled; bool dac; } ch4;
+    /* output ring buffer (stereo float interleaved) */
+    float   audio_ring[8192];
+    int     audio_head, audio_tail;
+    int     audio_sample_rate;
+    double  audio_accum;        /* cycles toward next output sample */
+
     /* serial (test-ROM result channel) */
     char serial_buf[8192];
     size_t serial_len;
@@ -89,6 +107,14 @@ void    gb_joypad_reset(GB *gb);
 uint8_t gb_timer_read(GB *gb, uint16_t addr);
 void    gb_timer_write(GB *gb, uint16_t addr, uint8_t v);
 void    gb_timer_tick(GB *gb, int tcycles);
+
+/* apu (apu.c) */
+void    gb_apu_reset(GB *gb);
+void    gb_apu_tick(GB *gb, int tcycles);
+uint8_t gb_apu_read(GB *gb, uint16_t addr);
+void    gb_apu_write(GB *gb, uint16_t addr, uint8_t v);
+void    gb_apu_set_sample_rate(GB *gb, int hz);
+int     gb_audio_read(GB *gb, float *out, int max_samples); /* drains ring; stereo interleaved */
 
 /* Untimed bus access (tests, future debugger). CPU wraps these with ticks. */
 uint8_t gb_read8(GB *gb, uint16_t addr);

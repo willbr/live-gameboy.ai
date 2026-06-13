@@ -47,10 +47,12 @@ void gb_reset(GB *gb) {
     gb->rom_bank = 1;
     gb_ppu_reset(gb);
     gb_joypad_reset(gb);
+    gb_apu_reset(gb);
 }
 
 void gb_tick(GB *gb, int tcycles) {
     gb->cycles += (uint64_t)tcycles;
     gb_timer_tick(gb, tcycles);
     gb_ppu_tick(gb, tcycles);
+    gb_apu_tick(gb, tcycles);
 }

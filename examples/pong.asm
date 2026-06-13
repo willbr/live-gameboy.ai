@@ -128,12 +128,93 @@ Main:
 ; (full bodies added in Task 3; stubs here so the boot test links/draws)
 
 ReadInput:
+    ; select the direction keys
+    ld a, $20
+    ldh ($00), a
+    ldh a, ($00)            ; ignore (let it settle)
+    ldh a, ($00)
+    ; bit2 = Up, bit3 = Down (0 = pressed)
+    bit 2, a
+    jr nz, .notUp
+    ld a, ($C0A4)
+    cp 8
+    jr c, .notUp            ; clamp at top
+    dec a
+    dec a                   ; speed 2 px/frame
+    ld ($C0A4), a
+.notUp:
+    ld a, $20
+    ldh ($00), a
+    ldh a, ($00)
+    ldh a, ($00)
+    bit 3, a
+    jr nz, .notDown
+    ld a, ($C0A4)
+    cp 120
+    jr nc, .notDown         ; clamp at bottom (144-24)
+    inc a
+    inc a
+    ld ($C0A4), a
+.notDown:
+    ld a, $30
+    ldh ($00), a
     ret
 
 UpdateAI:
+    ; right paddle chases the ball's Y, 1 px/frame
+    ld a, ($C0A1)           ; ballY
+    ld b, a
+    ld a, ($C0A5)           ; rPadY
+    cp b
+    jr z, .aiDone
+    jr c, .aiDown
+    dec a
+    ld ($C0A5), a
+    ret
+.aiDown:
+    inc a
+    ld ($C0A5), a
+.aiDone:
     ret
 
 UpdateBall:
+    ; --- X axis ---
+    ld a, ($C0A2)           ; ballDX (signed: 1 or $FF)
+    ld b, a
+    ld a, ($C0A0)           ; ballX
+    add a, b
+    ld ($C0A0), a
+    ; bounce off left paddle zone (ballX <= 24) -> DX = +1
+    cp 24
+    jr nc, .checkRight
+    ld a, 1
+    ld ($C0A2), a
+    jr .yaxis
+.checkRight:
+    ; bounce off right paddle zone (ballX >= 144) -> DX = -1 ($FF)
+    cp 144
+    jr c, .yaxis
+    ld a, $FF
+    ld ($C0A2), a
+.yaxis:
+    ; --- Y axis ---
+    ld a, ($C0A3)           ; ballDY
+    ld b, a
+    ld a, ($C0A1)           ; ballY
+    add a, b
+    ld ($C0A1), a
+    ; bounce off top (ballY <= 8) -> DY = +1
+    cp 8
+    jr nc, .checkBottom
+    ld a, 1
+    ld ($C0A3), a
+    ret
+.checkBottom:
+    ; bounce off bottom (ballY >= 136) -> DY = -1
+    cp 136
+    ret c
+    ld a, $FF
+    ld ($C0A3), a
     ret
 
 DrawSprites:

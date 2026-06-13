@@ -43,6 +43,11 @@ void gb_reset(GB *gb);   /* DMG post-boot-ROM register state */
 int  gb_step(GB *gb);    /* one instruction or interrupt dispatch; returns T-cycles */
 void gb_tick(GB *gb, int tcycles);  /* advance subsystems (timer) */
 
+/* internal: timer (timer.c) */
+uint8_t gb_timer_read(GB *gb, uint16_t addr);
+void    gb_timer_write(GB *gb, uint16_t addr, uint8_t v);
+void    gb_timer_tick(GB *gb, int tcycles);
+
 /* Untimed bus access (tests, future debugger). CPU wraps these with ticks. */
 uint8_t gb_read8(GB *gb, uint16_t addr);
 void    gb_write8(GB *gb, uint16_t addr, uint8_t v);

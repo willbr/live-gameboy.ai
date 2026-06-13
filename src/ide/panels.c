@@ -349,10 +349,21 @@ void panel_disasm(Canvas *c, IdeState *s) {
 }
 
 void panel_palette(Canvas *c, struct GB *gb) {
-    int px, py, pw, ph;
-    ide_panel_rect(PANEL_PALETTE, &px, &py, &pw, &ph);
-    draw_panel(c, px, py, pw, ph, "PALETTE");
-    (void)gb;
+    int x, y, w, h;
+    ide_panel_rect(PANEL_PALETTE, &x, &y, &w, &h);
+    ui_rect(c, x, y, w, h, 0x60A060FF);
+    static const uint32_t DMG[4] = {0xE0F8D0FF, 0x88C070FF, 0x346856FF, 0x081820FF};
+    const char *names[3] = {"BGP", "OB0", "OB1"};
+    uint8_t regs[3] = {gb->bgp, gb->obp0, gb->obp1};
+    int sw = 14;
+    for (int p = 0; p < 3; p++) {
+        int py = y + 2 + p * 11;
+        ui_text(c, x + 4, py, names[p], 0xA0FFA0FF);
+        for (int i = 0; i < 4; i++) {
+            int shade = (regs[p] >> (i * 2)) & 3;
+            ui_fill_rect(c, x + 36 + i * (sw + 2), py, sw, 9, DMG[shade]);
+        }
+    }
 }
 
 /* decode one shade (0..3) of a tile pixel from VRAM 2bpp at tile index t. */

@@ -9,7 +9,9 @@ static uint8_t io_read(GB *gb, uint8_t r) {
     case 0x04: case 0x05: case 0x06: case 0x07:
         return gb_timer_read(gb, 0xFF00 | r);
     case 0x0F: return gb->iflag | 0xE0;
-    case 0x44: return 0x90;  /* TODO(milestone-2): real PPU LY. Stub reports VBlank so ROMs progress */
+    case 0x40: case 0x41: case 0x42: case 0x43: case 0x44: case 0x45:
+    case 0x46: case 0x47: case 0x48: case 0x49: case 0x4A: case 0x4B:
+        return gb_ppu_read(gb, 0xFF00 | r);
     default:   return gb->io[r];
     }
 }
@@ -30,6 +32,9 @@ static void io_write(GB *gb, uint8_t r, uint8_t v) {
         gb_timer_write(gb, 0xFF00 | r, v);
         break;
     case 0x0F: gb->iflag = v & 0x1F; break;
+    case 0x40: case 0x41: case 0x42: case 0x43: case 0x44: case 0x45:
+    case 0x46: case 0x47: case 0x48: case 0x49: case 0x4A: case 0x4B:
+        gb_ppu_write(gb, 0xFF00 | r, v); break;
     default:   gb->io[r] = v; break;
     }
 }

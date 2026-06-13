@@ -27,6 +27,23 @@ typedef struct GB {
     uint8_t io[0x80];      /* raw backing for not-yet-modeled IO regs */
     uint8_t ie, iflag;     /* FFFF, FF0F (iflag upper 3 bits read as 1) */
 
+    /* ppu */
+    uint8_t lcdc, stat, scy, scx, ly, lyc, bgp, obp0, obp1, wy, wx;
+    int      ppu_mode;        /* 0 HBlank, 1 VBlank, 2 OAM, 3 Draw */
+    int      ppu_dot;         /* dot counter within the current scanline (0..455) */
+    bool     stat_line;       /* previous STAT interrupt line level (for edge detect) */
+    uint8_t  framebuffer[160 * 144];   /* shade 0..3 per pixel */
+    int      win_line;        /* window internal line counter */
+    bool     frame_ready;     /* set true when a full frame finishes (line 144 reached) */
+    /* mode-3 fifo working state (declared here so the whole struct stays serializable) */
+    int      fx;              /* current screen X being produced (0..159) in mode 3 */
+    int      fetch_step;      /* bg fetcher step 0..7 */
+    int      fetch_x;         /* bg fetcher tile-column counter for this line */
+    uint8_t  bg_fifo_c[8];    /* bg fifo colors */
+    int      bg_fifo_n;       /* bg fifo count */
+    bool     window_active;   /* window currently driving the fetcher this line */
+    uint8_t  oam_dma_src;     /* high byte of last DMA source */
+
     /* timer */
     uint16_t div16;        /* internal divider; DIV (FF04) is its high byte */
     uint8_t tima, tma, tac;
@@ -44,6 +61,15 @@ bool gb_load_rom(GB *gb, const uint8_t *data, size_t size); /* copies data */
 void gb_reset(GB *gb);   /* DMG post-boot-ROM register state */
 int  gb_step(GB *gb);    /* one instruction or interrupt dispatch; returns T-cycles */
 void gb_tick(GB *gb, int tcycles);  /* advance subsystems (timer) */
+
+/* internal: ppu (ppu.c) */
+void    gb_ppu_tick(GB *gb, int tcycles);
+uint8_t gb_ppu_read(GB *gb, uint16_t addr);   /* FF40-FF4B, FF46 */
+void    gb_ppu_write(GB *gb, uint16_t addr, uint8_t v);
+bool    gb_ppu_vram_blocked(const GB *gb);     /* true => CPU VRAM access denied */
+bool    gb_ppu_oam_blocked(const GB *gb);      /* true => CPU OAM access denied */
+void    gb_ppu_reset(GB *gb);
+const uint8_t *gb_framebuffer(const GB *gb);    /* 160*144 shades, for the shell */
 
 /* internal: timer (timer.c) */
 uint8_t gb_timer_read(GB *gb, uint16_t addr);

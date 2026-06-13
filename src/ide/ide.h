@@ -153,4 +153,26 @@ bool ide_soft_reset_from_file(IdeState *s, const char *path);
  * (i.e. has a live session and source text). */
 bool ide_is_asm(IdeState *s);
 
+/* -------------------------------------------------------------------------
+ * Task 13: Panel-click and address-field glue
+ * ------------------------------------------------------------------------- */
+
+/* Toggle a breakpoint at the disasm line under canvas-space (mx,my). No-op if
+   outside the disasm panel. Returns true if a line was hit. */
+bool ide_disasm_click(IdeState *s, int mx, int my);
+
+/* Toggle a read+write watchpoint at the mem-hex cell under (mx,my). Returns
+   true if a cell was hit. */
+bool ide_memhex_click(IdeState *s, int mx, int my);
+
+/* Address-entry field (PANEL_ADDR_INPUT). */
+void ide_addr_focus(IdeState *s, bool on);
+bool ide_addr_focused(IdeState *s);
+void ide_addr_putc(IdeState *s, char ch);
+void ide_addr_backspace(IdeState *s);
+/* Commit the typed hex address: toggles a PC breakpoint (current bank). */
+void ide_addr_commit(IdeState *s);
+/* Render the address field into canvas c (called at end of ide_render). */
+void ide_addr_render(IdeState *s, Canvas *c);
+
 #endif /* IDE_H */

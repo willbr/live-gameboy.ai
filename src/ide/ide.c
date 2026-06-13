@@ -24,6 +24,7 @@
 #include "../live/live.h"
 #include "../live/tile.h"
 #include "../gb/debug.h"
+#include "../gb/disasm.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -45,6 +46,7 @@ struct IdeState {
     int          frame_counter;
     uint16_t     mem_base;  /* base address for hex panel (default 0xC000) */
     ExecMode     exec_mode; /* execution-control state machine */
+    TextField    addr;      /* address-entry field for breakpoint input */
 };
 
 /* -------------------------------------------------------------------------
@@ -499,6 +501,103 @@ void ide_render(IdeState *s, Canvas *c) {
     panel_tile_editor(c, gb, s->selected_tile, s->paint_color);
     panel_mem_hex(c, gb, s->mem_base);
     panel_status(c, s->frame_counter, s->status);
+    ide_addr_render(s, c);
+}
+
+/* -------------------------------------------------------------------------
+ * Task 13: Panel-click and address-field glue
+ * ------------------------------------------------------------------------- */
+
+bool ide_disasm_click(IdeState *s, int mx, int my) {
+    if (!s) return false;
+    int x, y, w, h;
+    ide_panel_rect(PANEL_DISASM, &x, &y, &w, &h);
+    if (mx < x || mx >= x + w || my < y + 14 || my >= y + h) return false;
+    int row = (my - (y + 14)) / 8;
+    GB *gb = s->gb;
+    uint8_t bank = gb->rom_bank;
+    /* Mirror panel_disasm exactly: forward-only listing starting at pc. */
+    uint16_t addr = gb->cpu.pc;
+    char tmp[40];
+    for (int r = 0; r < row; r++)
+        addr = (uint16_t)(addr + gb_disasm(gb, bank, addr, tmp, sizeof tmp));
+    gb_debug_toggle_bp(gb, bank, addr);
+    return true;
+}
+
+bool ide_memhex_click(IdeState *s, int mx, int my) {
+    if (!s) return false;
+    int x, y, w, h;
+    ide_panel_rect(PANEL_MEM_HEX, &x, &y, &w, &h);
+    if (mx < x || mx >= x + w || my < y || my >= y + h) return false;
+    /* Mirror panel_mem_hex geometry:
+     *   tx = x + 4  (label origin)
+     *   label "%04X:" = 5 chars = 40px  → label ends at tx+40
+     *   each byte entry " %02X" = 3 chars; cell_x = tx + (5 + b*3)*8 + 8
+     *   so first cell (b=0) starts at tx + 48  =  x + 52
+     *   stride between cells = 3*8 = 24px
+     *   cell width of the two hex-digit chars = 16px (2 chars * 8px)       */
+    int tx = x + 4;
+    int first_cell = tx + 48;   /* tx + (5+0*3)*8 + 8 = tx + 48 */
+    int stride = 24;            /* 3 chars * 8px per char */
+    int col = (mx - first_cell) / stride;
+    int line_h = 9;             /* matches panel_mem_hex line_h */
+    int rowi = (my - (y + 12)) / line_h;
+    if (col < 0 || col > 15 || rowi < 0) return false;
+    uint16_t a = (uint16_t)(s->mem_base + rowi * 16 + col);
+    /* Toggle watchpoint: remove if present, add r+w if absent. */
+    if (s->gb->dbg) {
+        int idx = -1;
+        for (int i = 0; i < s->gb->dbg->wp_count; i++) {
+            if (s->gb->dbg->wp[i].addr == a) { idx = i; break; }
+        }
+        if (idx >= 0)
+            gb_debug_clear_wp(s->gb, idx);
+        else
+            gb_debug_add_wp(s->gb, a, true, true);
+    }
+    return true;
+}
+
+void ide_addr_focus(IdeState *s, bool on) {
+    if (!s) return;
+    if (on) {
+        textfield_clear(&s->addr);
+        s->addr.active = true;
+    } else {
+        s->addr.active = false;
+    }
+}
+
+bool ide_addr_focused(IdeState *s) {
+    return s && s->addr.active;
+}
+
+void ide_addr_putc(IdeState *s, char ch) {
+    if (s) textfield_putc(&s->addr, ch);
+}
+
+void ide_addr_backspace(IdeState *s) {
+    if (s) textfield_backspace(&s->addr);
+}
+
+void ide_addr_commit(IdeState *s) {
+    if (!s || s->addr.len == 0) {
+        if (s) s->addr.active = false;
+        return;
+    }
+    unsigned long v = strtoul(s->addr.text, NULL, 16);
+    gb_debug_toggle_bp(s->gb, s->gb->rom_bank, (uint16_t)v);
+    textfield_clear(&s->addr);
+}
+
+void ide_addr_render(IdeState *s, Canvas *c) {
+    if (!s || !c) return;
+    int x, y, w, h;
+    ide_panel_rect(PANEL_ADDR_INPUT, &x, &y, &w, &h);
+    (void)w; (void)h;
+    ui_text(c, x, y, "BP@", 0xA0FFA0FF);
+    textfield_render(c, x + 24, y, &s->addr, 0xFFD700FF, 0x081820FF);
 }
 
 /* -------------------------------------------------------------------------

@@ -39,7 +39,19 @@ $(BUILD)/dmg_acid2: tests/dmg_acid2.c $(GB_OBJ) | $(BUILD)
 acid2: $(BUILD)/dmg_acid2
 	./$(BUILD)/dmg_acid2 roms/dmg-acid2.gb
 
-clean:
-	rm -rf $(BUILD)
+# --- SDL shell (separate from the SDL-free core tests) ---
+SDL_CFLAGS = $(shell pkg-config --cflags sdl3)
+SDL_LIBS   = $(shell pkg-config --libs sdl3)
+SHELL_SRC  = $(wildcard src/shell/*.c)
 
-.PHONY: all test blargg roms clean acid2
+live-gameboy: $(SHELL_SRC) $(GB_OBJ)
+	$(CC) $(CFLAGS) $(SDL_CFLAGS) $(SHELL_SRC) $(GB_OBJ) $(SDL_LIBS) -lz -o $@
+
+# headless screenshot for verification/CI (still links SDL but never opens a window)
+shell-shot: live-gameboy
+	./live-gameboy --shot roms/dmg-acid2.gb build/shell-acid2.png 60 2
+
+clean:
+	rm -rf $(BUILD) live-gameboy
+
+.PHONY: all test blargg roms clean acid2 shell-shot

@@ -9,6 +9,8 @@
 ;    editor — every body/food cell updates live (snakebody/food .2bpp).
 ; 4. GROW BY HAND (memory edit): bump the length byte at $C003 in the
 ;    MEMORY panel. Use F8 if you edit init code.
+; 5. TUNE THE SOUND (F5): edit the EAT-FOOD pitch in StepSnake or the
+;    WRAP pitch in SfxWrap, press F5, hear it change.
 ;
 ; Controls: D-pad steers. Walls wrap (edit StepSnake to make them deadly).
 
@@ -66,6 +68,14 @@ Main:
     ; draw initial head + food so the boot screen is non-blank
     call DrawHead
     call DrawFood
+
+    ; --- Sound: power on APU, full volume, route all channels both sides ---
+    ld a, $80
+    ldh ($26), a             ; NR52 = APU on (write FIRST)
+    ld a, $77
+    ldh ($24), a             ; NR50 = master volume L/R
+    ld a, $FF
+    ldh ($25), a             ; NR51 = all channels to both speakers
 
     ld a, $91                ; LCD on, tiledata $8000, BG on (no sprites)
     ldh ($40), a
@@ -224,9 +234,11 @@ StepSnake:
     cp 200
     jr c, .xhi
     ld b, 19
+    call SfxWrap
     jr .xok
 .xhi:
     ld b, 0
+    call SfxWrap
 .xok:
     ld a, c
     cp 18
@@ -234,9 +246,11 @@ StepSnake:
     cp 200
     jr c, .yhi
     ld c, 17
+    call SfxWrap
     jr .yok
 .yhi:
     ld c, 0
+    call SfxWrap
 .yok:
     ; 4) commit new head
     ld a, b
@@ -254,6 +268,8 @@ StepSnake:
     inc a
     ld ($C003), a           ; grow (length byte; visible in MEMORY panel)
     call .NewFood
+    ld de, $0780            ; EAT-FOOD chime (~1024 Hz)    ; TWEAK + F5
+    call SfxTone
 .noFood:
     call DrawHead
     ret
@@ -285,4 +301,27 @@ StepSnake:
 .ydone:
     ld ($C006), a
     call DrawFood
+    ret
+
+; ====================== SOUND ======================
+; SfxTone — short CH1 (pulse) blip. In: D=freq hi (bits2-0), E=freq lo.
+; Clobbers A; reads (preserves) D,E; preserves B,C,HL.
+SfxTone:
+    xor a
+    ldh ($10), a             ; NR10 = no sweep
+    ld a, $A0
+    ldh ($11), a             ; NR11 = duty 50% + length
+    ld a, $F2
+    ldh ($12), a             ; NR12 = vol 15, decay (DAC on)
+    ld a, e
+    ldh ($13), a             ; NR13 = freq lo
+    ld a, d
+    or $C0
+    ldh ($14), a             ; NR14 = trigger + length-enable + freq hi
+    ret
+
+; SfxWrap — soft low blip when the snake wraps a wall. Clobbers A,D,E.
+SfxWrap:
+    ld de, $0400             ; WRAP pitch (~128 Hz)        ; TWEAK + F5
+    call SfxTone
     ret

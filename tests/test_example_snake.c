@@ -61,10 +61,37 @@ static void test_snake_turns_left(void) {
     gb_free(gb); asm_free(&r);
 }
 
+/* Init powers on the APU and routes channels (NR51=$FF vs reset $F3). */
+static void test_snake_apu_on(void) {
+    AsmResult r = ex_assemble("examples/snake.asm");
+    ASSERT_TRUE(r.ok);
+    GB *gb = gb_new();
+    gb_load_rom(gb, r.rom, r.rom_size);
+    gb_reset(gb);
+    ex_run(gb, 5, 2000000);
+    ASSERT_TRUE(gb_read8(gb, 0xFF26) & 0x80);
+    ASSERT_EQ(gb_read8(gb, 0xFF25), 0xFF);
+    gb_free(gb); asm_free(&r);
+}
+
+/* Eating food (default: head moves right into food at (15,9)) fires a CH1 chime. */
+static void test_snake_eat_sfx(void) {
+    AsmResult r = ex_assemble("examples/snake.asm");
+    ASSERT_TRUE(r.ok);
+    GB *gb = gb_new();
+    gb_load_rom(gb, r.rom, r.rom_size);
+    gb_reset(gb);
+    uint8_t seen = ex_run_watch_nr52(gb, 160, 9000000);
+    ASSERT_TRUE(seen & 0x01);
+    gb_free(gb); asm_free(&r);
+}
+
 int main(void) {
     test_snake_boots();
     test_snake_moves();
     test_snake_turns_down();
     test_snake_turns_left();
+    test_snake_apu_on();
+    test_snake_eat_sfx();
     TEST_MAIN_END();
 }

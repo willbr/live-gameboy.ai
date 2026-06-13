@@ -5,6 +5,10 @@ BUILD   = build
 GB_SRC  = $(wildcard src/gb/*.c)
 GB_OBJ  = $(GB_SRC:src/gb/%.c=$(BUILD)/gb/%.o)
 
+# Assembler library objects — exclude gbasm.c (it defines main())
+ASM_SRC = $(filter-out src/asm/gbasm.c,$(wildcard src/asm/*.c))
+ASM_OBJ = $(ASM_SRC:src/asm/%.c=$(BUILD)/asm/%.o)
+
 TESTS   = $(wildcard tests/test_*.c)
 TESTBIN = $(TESTS:tests/%.c=$(BUILD)/%)
 
@@ -13,10 +17,13 @@ all: test
 $(BUILD)/gb/%.o: src/gb/%.c src/gb/gb.h | $(BUILD)/gb
 	$(CC) $(CFLAGS) -c $< -o $@
 
-$(BUILD)/%: tests/%.c $(GB_OBJ) tests/test.h | $(BUILD)
-	$(CC) $(CFLAGS) $< $(GB_OBJ) -o $@
+$(BUILD)/asm/%.o: src/asm/%.c src/asm/asm.h | $(BUILD)/asm
+	$(CC) $(CFLAGS) -c $< -o $@
 
-$(BUILD) $(BUILD)/gb:
+$(BUILD)/%: tests/%.c $(GB_OBJ) $(ASM_OBJ) tests/test.h | $(BUILD)
+	$(CC) $(CFLAGS) $< $(GB_OBJ) $(ASM_OBJ) -o $@
+
+$(BUILD) $(BUILD)/gb $(BUILD)/asm:
 	mkdir -p $@
 
 test: $(TESTBIN)
@@ -45,6 +52,10 @@ $(BUILD)/dmg_acid2: tests/dmg_acid2.c $(GB_OBJ) | $(BUILD)
 acid2: $(BUILD)/dmg_acid2
 	./$(BUILD)/dmg_acid2 roms/dmg-acid2.gb
 
+# --- gbasm CLI ---
+gbasm: src/asm/gbasm.c $(ASM_OBJ) $(GB_OBJ) | $(BUILD)
+	$(CC) $(CFLAGS) $< $(ASM_OBJ) $(GB_OBJ) -o $@
+
 # --- SDL shell (separate from the SDL-free core tests) ---
 SDL_CFLAGS = $(shell pkg-config --cflags sdl3)
 SDL_LIBS   = $(shell pkg-config --libs sdl3)
@@ -58,6 +69,6 @@ shell-shot: live-gameboy
 	./live-gameboy --shot roms/dmg-acid2.gb build/shell-acid2.png 60 2
 
 clean:
-	rm -rf $(BUILD) live-gameboy
+	rm -rf $(BUILD) live-gameboy gbasm
 
-.PHONY: all test blargg roms clean acid2 shell-shot sound
+.PHONY: all test blargg roms clean acid2 shell-shot sound gbasm

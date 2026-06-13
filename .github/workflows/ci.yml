@@ -1,0 +1,13 @@
+name: ci
+on: [push, pull_request]
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: unit tests
+        run: make test
+      - name: fetch test roms
+        run: git clone --depth 1 https://github.com/retrio/gb-test-roms roms/gb-test-roms
+      - name: blargg acceptance
+        run: make blargg

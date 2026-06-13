@@ -101,6 +101,11 @@ for the `TRY THIS LIVE` recipe at the top of each file.
 Build them as standalone ROMs with `make examples`, or take headless
 screenshots with `make pong-shot` / `make snake-shot` / `make breakout-shot`.
 
+Each game also plays **sound effects** on key events (Pong: paddle/wall/score;
+Snake: eat-food/wall-wrap; Breakout: brick-break/paddle/wall). The effect
+pitches are grouped at their call sites as `ld de, $....` (CH1 tone) or
+`ld b, $..` (CH4 noise) constants — edit one and press **F5** to hear it change.
+
 ## Assemble
 
 The built-in `gbasm` assembler compiles RGBDS-inspired SM83 assembly to a valid

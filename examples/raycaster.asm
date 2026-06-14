@@ -75,10 +75,10 @@ Main:
     dec b
     jr nz, .bord
 
-    ; --- "R" rendering-indicator sprite glyph -> tile 145 ($8910) ---
+    ; --- 16x16 "R" indicator glyph -> tiles 145..148 ($8910, 4 tiles) ---
     ld hl, RTile
     ld de, $8910
-    ld bc, 16
+    ld bc, 64
 .rcopy:
     ld a, (hl+)
     ld (de), a
@@ -146,12 +146,27 @@ Main:
     ld a, b
     or c
     jr nz, .clroam
-    ld a, 84
-    ld ($FE01), a            ; X = 84  (screen x ~76, over the light ceiling)
+    ; 16x16 R = four 8x8 sprites (OBJ 0..3) in a 2x2 grid, top-centre.
+    ; X = screen 72/80 + 8 = 80/88 ; tiles 145(TL) 146(TR) 147(BL) 148(BR).
+    ld a, 80
+    ld ($FE01), a            ; OBJ0 TL X
+    ld ($FE09), a            ; OBJ2 BL X
+    ld a, 88
+    ld ($FE05), a            ; OBJ1 TR X
+    ld ($FE0D), a            ; OBJ3 BR X
     ld a, 145
-    ld ($FE02), a            ; tile 145 = R glyph
+    ld ($FE02), a
+    inc a
+    ld ($FE06), a            ; 146
+    inc a
+    ld ($FE0A), a            ; 147
+    inc a
+    ld ($FE0E), a            ; 148
     xor a
-    ld ($FE03), a            ; attr = 0 (OBP0)
+    ld ($FE03), a            ; attrs = 0 (OBP0); Y's stay 0 = hidden
+    ld ($FE07), a
+    ld ($FE0B), a
+    ld ($FE0F), a
 
     ld a, 3
     ld ($C0A0), a            ; px
@@ -202,8 +217,12 @@ Main:
     call ReadInput           ; turns / moves; A != 0 if the view must redraw
     or a
     jr z, .noRedraw
-    ld a, 32                 ; show the "R" sprite (we're in VBlank: OAM writable)
-    ld ($FE00), a            ; OBJ 0 Y = 32 -> on screen while we render
+    ld a, 28                 ; show the 16x16 "R" (VBlank: OAM writable)
+    ld ($FE00), a            ; OBJ0/1 top row Y = 28
+    ld ($FE04), a
+    ld a, 36                 ; OBJ2/3 bottom row Y = 36
+    ld ($FE08), a
+    ld ($FE0C), a
     call CastColumns         ; <-- F5 RENDERER -> shadow buffer (LCD stays on)
     di
     xor a
@@ -211,6 +230,9 @@ Main:
     call BlitShadow          ; shadow -> VRAM tile data
     xor a
     ld ($FE00), a            ; hide the "R" (LCD off: OAM writable) -> ready
+    ld ($FE04), a
+    ld ($FE08), a
+    ld ($FE0C), a
     ld (SCYACC), a           ; reset the line-double accumulator
     ldh ($42), a             ; SCY = 0 for line 0 of the resumed frame
     ld a, $93

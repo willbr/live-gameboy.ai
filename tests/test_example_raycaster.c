@@ -121,7 +121,7 @@ static void test_raycaster_indicator(void) {
     for (int i = 0; i < 4000 && !hidden_again; i++) {
         ex_run(gb, 1, 200000);
         uint8_t y = gb_read8(gb, 0xFE00);
-        if (y == 32) shown = 1;
+        if (y == 28) shown = 1;
         else if (shown && y == 0) hidden_again = 1;
     }
     ASSERT_TRUE(shown);                           /* shown while rendering */

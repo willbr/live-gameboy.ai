@@ -1,3 +1,5 @@
+debug messages like bgb: https://bgb.bircd.org/manual.html#expressions
+
 8x16 editor
 16x16 tile editor
 32x32 tile editor

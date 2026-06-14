@@ -1232,6 +1232,8 @@ AsmResult asm_assemble_mem(const char *src, const char *filename,
          * use the default ROM0 @ DEFAULT_ORG. */
         uint16_t layout_base = DEFAULT_ORG;
         int      layout_bank = 0;
+        bool     base_set    = false;
+        bool     low_located = false;  /* a located ROM0 section below $0150 */
         for (int i = 0; i < nstmts; i++) {
             if (stmts[i].kind == ST_DIRECTIVE &&
                 stmts[i].dir.kind == DIR_SECTION) {
@@ -1239,15 +1241,23 @@ AsmResult asm_assemble_mem(const char *src, const char *filename,
                 parse_section_args(toks, stmts[i].dir.args_start,
                                    stmts[i].dir.args_count,
                                    &tb, &to, &sec_located);
-                /* Fixed-address sections (interrupt vectors) hold no functions
-                 * and must not become the layout base — skip to the first
-                 * normal code section. */
-                if (sec_located) continue;
+                /* A fixed-address ROM0 section below the default origin is an
+                 * interrupt vector / low reserved block. */
+                if (sec_located && tb == 0 && to < DEFAULT_ORG)
+                    low_located = true;
+                /* Fixed-address sections hold no functions and must not become
+                 * the layout base — use the first normal code section. */
+                if (sec_located || base_set) continue;
                 layout_bank = tb;
                 layout_base = to;
-                break;
+                base_set    = true;
             }
         }
+        /* If the program defines low located sections (interrupt vectors), keep
+         * the default code origin clear of them (and the header): bump a ROM0
+         * base up to $0150 so plain `SECTION "code", ROM0` can't stomp them. */
+        if (low_located && layout_bank == 0 && layout_base < DEFAULT_ORG)
+            layout_base = DEFAULT_ORG;
 
         int np = 0;
         AsmPlacement *placements = layout_plan(st.syms, st.count,

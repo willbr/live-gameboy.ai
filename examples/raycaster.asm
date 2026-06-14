@@ -48,8 +48,9 @@ SECTION "vec_vblank", ROM0[$0040]
 SECTION "vec_stat", ROM0[$0048]
     jp StatISR               ; STAT mode-0 (HBlank): line-double via SCY
 
-; Main code starts above the header/vectors so it can't stomp them.
-SECTION "code", ROM0[$0150]
+; Plain ROM0: gbasm auto-places the code above the header and the vectors
+; defined above, so it can't stomp them.
+SECTION "code", ROM0
 
 MAXSTEPS  EQU 28        ; max ray steps before "open" (4 steps = 1 cell)  ; TWEAK + F5
 NEAR_CUT  EQU 12        ; dist (1/4 cells) below this = bright near-wall tile  ; TWEAK + F5

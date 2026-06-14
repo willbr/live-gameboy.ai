@@ -459,17 +459,18 @@ static void test_jr_cc(void)
 
 /* =========================================================================
  * Fixed-address ROM0 section: SECTION "v", ROM0[$0048] pins code at $0048
- * (used for interrupt vectors). The byte must land at linear offset 0x48, and
- * the main code (default origin) must still be placed normally above it.
+ * (interrupt vector). With a low located section present, plain
+ * `SECTION "code", ROM0` must auto-place its code above the vectors/header
+ * (>= $0150) even when the first function is tiny — so it can't stomp them.
  * ======================================================================= */
 static void test_rom0_fixed_addr(void)
 {
     const char *src =
         "    SECTION \"stat\", ROM0[$0048]\n"
         "    jp Handler\n"
-        "    SECTION \"code\", ROM0\n"
+        "    SECTION \"code\", ROM0\n"   /* plain ROM0: no explicit origin */
         "Main:\n"
-        "    ds 300\n"          /* big enough that the slot clears the header */
+        "    nop\n"                       /* tiny: would land at $0000 otherwise */
         "Handler:\n"
         "    reti\n";
 
@@ -484,10 +485,12 @@ static void test_rom0_fixed_addr(void)
     ASSERT_EQ(r.rom[0x0049], (uint8_t)(h->addr & 0xFF));
     ASSERT_EQ(r.rom[0x004A], (uint8_t)(h->addr >> 8));
 
-    /* Main lands at the normal code origin (>= $0150), not at the vector. */
+    /* Auto-cleared: Main (and the vector target) sit at/above $0150, clear of
+     * the vectors — even though Main is a single byte. */
     const AsmSymbol *m = find_sym(&r, "Main");
     ASSERT_TRUE(m != NULL);
     ASSERT_TRUE(m->addr >= 0x0150);
+    ASSERT_TRUE(h->addr >= 0x0150);
     asm_free(&r);
 }
 

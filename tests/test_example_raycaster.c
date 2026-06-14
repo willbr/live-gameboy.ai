@@ -79,6 +79,10 @@ static void test_raycaster_moves(void) {
     }
     ASSERT_TRUE(py1 != py0);             /* player advanced a cell */
 
+    /* The redraw renders into a WRAM shadow with the LCD on (~12 frames), then
+     * blits to VRAM, so let it settle before checking the framebuffer. */
+    ex_run(gb, 30, 12000000);
+
     /* the rendered bitmap changed too */
     int differ = 0;
     for (int i = 0; i < 0x900; i++)

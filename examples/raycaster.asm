@@ -25,15 +25,16 @@
 ;     resets SCY at the top of each frame. SCX centres it horizontally (128
 ;     wide, 16px border each side). The ISRs sit in fixed-address sections
 ;     (SECTION ... ROM0[$0040]/[$0048]) — gbasm supports located sections.
-;   * The raycaster renders PER PIXEL into the bitmap: one ray per screen
-;     COLUMN (128 of them). Each ray steps in 8.8 fixed point — a constant
-;     forward delta (64 = 1/4 cell) plus a per-column perpendicular delta
+;   * The raycaster casts one ray per 2 screen columns (64 rays, shared with
+;     the odd neighbour). Each ray steps in 8.8 fixed point — a constant
+;     forward delta (128 = 1/2 cell) plus a per-column perpendicular delta
 ;     (PerpStep) so the rays fan like a camera. NO multiply. The forward
 ;     component is constant, so the step count is the PERPENDICULAR distance
 ;     (no fish-eye); it indexes WallHeights -> wall pixel height. The column is
 ;     filled ceiling / wall (near=light, far=dark) / floor at exact pixels.
-;   * The full bitmap redraw is far bigger than one VBlank, so it runs with the
-;     LCD off, only when the view changes (on move/turn), not every frame.
+;   * The redraw (~0.4s) runs into the WRAM shadow with the LCD ON — the screen
+;     keeps showing the previous frame, no blank — and only the fast shadow->
+;     VRAM blit briefly blanks the LCD (~1 frame). Only re-renders on move/turn.
 ; ---------------------------------------------------------------------
 ;
 ; Memory map (WRAM vars):
@@ -52,10 +53,11 @@ SECTION "vec_stat", ROM0[$0048]
 ; defined above, so it can't stomp them.
 SECTION "code", ROM0
 
-MAXSTEPS  EQU 28        ; max ray steps before "open" (4 steps = 1 cell)  ; TWEAK + F5
-NEAR_CUT  EQU 12        ; dist (1/4 cells) below this = bright near-wall tile  ; TWEAK + F5
+MAXSTEPS  EQU 16        ; max ray steps before "open" (2 steps = 1 cell)  ; TWEAK + F5
+NEAR_CUT  EQU 6         ; dist (1/2 cells) below this = bright near-wall tile  ; TWEAK + F5
 BORDER    EQU 144       ; tile index used for the left/right border
 SCYACC    EQU $C0E0     ; WRAM: running SCY value the HBlank ISR walks down
+SHADOW    EQU $C400     ; WRAM shadow framebuffer (rendered with LCD on)
 
 Main:
     ld sp, $FFFE
@@ -135,8 +137,9 @@ Main:
     ld a, $FF
     ldh ($25), a             ; NR51 route all
 
-    ; --- first render while LCD off (VRAM fully writable) ---
+    ; --- first render into the shadow buffer, then blit to VRAM (LCD off) ---
     call CastColumns
+    call BlitShadow
 
     ; --- arm the line-doubling interrupts ---
     xor a
@@ -155,8 +158,10 @@ Main:
     ei                       ; the HBlank/VBlank ISRs now line-double every frame
 
 ; -------------------- MAIN LOOP --------------------
-; The interrupts handle the display (line-doubling); the loop just reads input
-; once per frame and re-renders the bitmap (LCD off) when the view changes.
+; The interrupts handle the display (line-doubling). The loop reads input once
+; per frame; on a move it RE-RENDERS INTO THE SHADOW WITH THE LCD ON (the screen
+; keeps showing the previous frame — no blank), then briefly blanks the LCD only
+; for the fast shadow->VRAM blit (~1 frame), so there is no long flicker.
 .loop:
     halt                     ; sleep until an interrupt (VBlank or HBlank)
     ldh a, ($44)
@@ -166,11 +171,11 @@ Main:
     call ReadInput           ; turns / moves; A != 0 if the view must redraw
     or a
     jr z, .noRedraw
-    ; full bitmap redraw needs the LCD off (far bigger than one VBlank)
+    call CastColumns         ; <-- F5 RENDERER -> shadow buffer (LCD stays on)
     di
     xor a
-    ldh ($40), a             ; LCD off
-    call CastColumns         ; <-- F5 RENDERER (128 per-pixel ray columns)
+    ldh ($40), a             ; LCD off (only for the quick blit)
+    call BlitShadow          ; shadow -> VRAM tile data
     xor a
     ld (SCYACC), a           ; reset the line-double accumulator
     ldh ($42), a             ; SCY = 0 for line 0 of the resumed frame
@@ -184,6 +189,66 @@ Main:
     cp 144
     jr nc, .we
     jr .loop
+
+; ====================== SHADOW BLIT ======================
+; BlitShadow — copy the 144-tile shadow framebuffer ($C400) to VRAM tile data
+; ($8000). 2304 bytes; called with the LCD off so writes always land. ~14ms.
+BlitShadow:
+    ld hl, SHADOW
+    ld de, $8000
+    ld c, 144                ; 144 tiles, 16 bytes each (unrolled to cut overhead)
+.blit:
+    ld a, (hl+)
+    ld (de), a
+    inc de
+    ld a, (hl+)
+    ld (de), a
+    inc de
+    ld a, (hl+)
+    ld (de), a
+    inc de
+    ld a, (hl+)
+    ld (de), a
+    inc de
+    ld a, (hl+)
+    ld (de), a
+    inc de
+    ld a, (hl+)
+    ld (de), a
+    inc de
+    ld a, (hl+)
+    ld (de), a
+    inc de
+    ld a, (hl+)
+    ld (de), a
+    inc de
+    ld a, (hl+)
+    ld (de), a
+    inc de
+    ld a, (hl+)
+    ld (de), a
+    inc de
+    ld a, (hl+)
+    ld (de), a
+    inc de
+    ld a, (hl+)
+    ld (de), a
+    inc de
+    ld a, (hl+)
+    ld (de), a
+    inc de
+    ld a, (hl+)
+    ld (de), a
+    inc de
+    ld a, (hl+)
+    ld (de), a
+    inc de
+    ld a, (hl+)
+    ld (de), a
+    inc de
+    dec c
+    jr nz, .blit
+    ret
 
 ; ====================== LINE-DOUBLING ISRs ======================
 ; The 128x72 bitmap is stretched to 144px by showing each source row on two
@@ -335,16 +400,16 @@ TryMove:
 ; CastRay — cast one column ray. In: E = PerpStep (signed lateral delta/step).
 ; Out: B = distance (steps, 0..MAXSTEPS). Clobbers A,C,D,E,H,L. (B is result.)
 CastRay:
-    ld a, ($C0A2)            ; dir -> per-step dX(B), dY(C); FWD=64
+    ld a, ($C0A2)            ; dir -> per-step dX(B), dY(C); FWD=128 (1/2 cell)
     or a
     jr nz, .cE
     ld b, e
-    ld c, -64
+    ld c, -128
     jr .cd
 .cE:
     cp 1
     jr nz, .cS
-    ld b, 64
+    ld b, 128
     ld c, e
     jr .cd
 .cS:
@@ -353,10 +418,10 @@ CastRay:
     xor a
     sub e
     ld b, a
-    ld c, 64
+    ld c, 128
     jr .cd
 .cW:
-    ld b, -64
+    ld b, -128
     xor a
     sub e
     ld c, a
@@ -478,11 +543,15 @@ CastColumns:
     ld h, $C0
     ld a, d
     ld (hl), a               ; colStart[j]
+    inc l
+    ld (hl), a               ; colStart[j+1] (cast every 2px; share the odd col)
     ld a, ($C0D1)
     add a, $B8
     ld l, a
     ld a, e
     ld (hl), a               ; colEnd[j]
+    inc l
+    ld (hl), a               ; colEnd[j+1]
     ; minStart / maxEnd
     ld a, d
     ld hl, $C0D8
@@ -510,8 +579,10 @@ CastColumns:
     ld h, $C0
     ld a, c
     ld (hl), a               ; colColor[j]
+    inc l
+    ld (hl), a               ; colColor[j+1]
     ld a, ($C0D1)
-    inc a
+    add a, 2                 ; cast every other column (0,2,4,6)
     ld ($C0D1), a
     cp 8
     jp c, .castJ
@@ -520,12 +591,12 @@ CastColumns:
     xor a
     ld ($C0D2), a            ; ty = 0
 .tyLoop:
-    ld a, ($C0D0)            ; tileAddr = $8000 + (ty*16+tx)*16
+    ld a, ($C0D0)            ; shadow tileAddr = SHADOW + (ty*16+tx)*16
     swap a                   ; tx*16
     ld ($C0D6), a            ; tileAddr lo
     ld a, ($C0D2)
-    add a, $80
-    ld ($C0D7), a            ; tileAddr hi = $80 + ty
+    add a, $C4              ; hi = (SHADOW>>8) + ty   (SHADOW = $C400)
+    ld ($C0D7), a
     ld a, ($C0D2)            ; tileTop = ty*8
     add a, a
     add a, a
@@ -673,10 +744,10 @@ DirDY:
 PerpStep:
     incbin "examples/rc_perp.bin"
 
-; WallHeights[dist 0..MAXSTEPS] -> wall height in PIXELS (dist in 1/4 cells,
-; max 72 = bitmap height). Smooth perspective curve (~360/(dist+5)).  ; TWEAK + F5
+; WallHeights[dist 0..MAXSTEPS] -> wall height in PIXELS (dist in 1/2 cells,
+; max 72 = bitmap height). Smooth perspective curve (~216/(dist+3)).  ; TWEAK + F5
 WallHeights:
-    db 72,60,51,45,40,36,33,30,28,26,24,22,21,20,19,18,17,16,16,15,14,14,13,13,12,12,12,11,11
+    db 72,54,43,36,31,27,24,22,20,18,17,16,15,14,13,12,12
 
 ; ====================== SOUND ======================
 ; SfxTone — short CH1 pulse blip. In: D=freq hi (bits2-0), E=freq lo.

@@ -62,13 +62,10 @@ static void test_raycaster_moves(void) {
     gb_reset(gb);
     ex_run(gb, 10, 4000000);
     uint8_t py0 = gb_read8(gb, 0xC0A1);
-    /* snapshot the whole visible BG tilemap (18 rows x 20 cols) before moving.
-     * The corridor's side walls are self-similar along its length, so only the
-     * far wall near the centre changes on a step — a full-screen compare. */
-    uint8_t before[18 * 20];
-    for (int row = 0; row < 18; row++)
-        for (int col = 0; col < 20; col++)
-            before[row * 20 + col] = gb->vram[0x1800 + row * 32 + col];
+    /* The view is a bitmap in TILE DATA (tiles 0..143 = vram[0..0x8FF]), not in
+     * the tilemap. Snapshot that framebuffer before moving. */
+    uint8_t before[0x900];
+    for (int i = 0; i < 0x900; i++) before[i] = gb->vram[i];
 
     /* Tap Up (forward) a few times, releasing between taps. */
     uint8_t py1 = py0;
@@ -82,12 +79,11 @@ static void test_raycaster_moves(void) {
     }
     ASSERT_TRUE(py1 != py0);             /* player advanced a cell */
 
-    /* the rendered view changed too */
+    /* the rendered bitmap changed too */
     int differ = 0;
-    for (int row = 0; row < 18 && !differ; row++)
-        for (int col = 0; col < 20; col++)
-            if (gb->vram[0x1800 + row * 32 + col] != before[row * 20 + col]) { differ = 1; break; }
-    ASSERT_TRUE(differ);                  /* tilemap re-cast after the move */
+    for (int i = 0; i < 0x900; i++)
+        if (gb->vram[i] != before[i]) { differ = 1; break; }
+    ASSERT_TRUE(differ);                  /* framebuffer re-rendered after the move */
     gb_free(gb); asm_free(&r);
 }
 

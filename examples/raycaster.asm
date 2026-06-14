@@ -1,192 +1,209 @@
-; raycaster.asm — first-person pseudo-3D maze for the live-gameboy IDE
+; raycaster.asm — first-person bitmap raycaster for the live-gameboy IDE
 ;
 ; ============================ TRY THIS LIVE ============================
 ; 1. Run:  ./live-gameboy-ide examples/raycaster.asm
-; 2. HOT-RELOAD THE LENS (F5): CastAndDraw holds the renderer. The grouped
+; 2. HOT-RELOAD THE LENS (F5): CastColumns is the renderer. The grouped
 ;    `; TWEAK + F5` constants are the lens — MAXSTEPS (max view distance), the
 ;    PerpStep table (field-of-view / fan width) and the WallHeights curve
 ;    (depth feel). Edit one, press F5: the view changes while your
 ;    position/heading persist (e.g. widen PerpStep for a fish-eye).
-; 3. RESKIN (paint): select VRAM tile 1 (near wall), 2 (far wall), 3 (ceiling)
-;    or 4 (floor) in the tile viewer and paint it — the whole 3D view reskins
-;    live (rc_wall_lt / rc_wall_dk / rc_ceiling / rc_floor .2bpp).
-; 4. REBUILD THE WORLD (F8): edit the Maze DB rows (1=wall 0=empty, 8x8) or the
-;    start cell at $C0A0/$C0A1. Maze + tiles load once in Main, so use F8
-;    (soft reset) for those edits.
-; 5. Controls: Left/Right = turn 90 degrees, Up = step forward, Down = step
+; 3. REBUILD THE WORLD (F8): edit the Maze DB rows (1=wall 0=empty, 8x8) or the
+;    start cell at $C0A0/$C0A1. Maze loads once in Main, so use F8.
+; 4. Controls: Left/Right = turn 90 degrees, Up = step forward, Down = step
 ;    back. Walls block movement.
 ;
 ; ---------------------------------------------------------------------
-; TECHNIQUE / HONESTY NOTE
+; TECHNIQUE / HONESTY NOTE — BITMAP DISPLAY
 ; ---------------------------------------------------------------------
-; This is NOT a per-pixel DDA raycaster (impossible at 60fps in pure SM83
-; with no multiply). It is an honest pseudo-3D column caster:
-;   * Fixed 8x8 maze grid (Maze DB, 1=wall 0=empty).
-;   * Player heading is one of 4 cardinal directions (N/E/S/W) so the forward
-;     and lateral axes are just signed cell steps — no trig.
-;   * One ray per BG tile COLUMN (20 columns). The ray steps in 8.8 fixed
-;     point: a CONSTANT forward delta (64 = 1/4 cell) plus a per-column
-;     PERPENDICULAR delta (PerpStep table) so the rays fan out like a camera.
-;     NO multiply: the lateral offset accumulates by repeated addition.
-;   * Because the forward component is a constant 1/4 cell, the STEP COUNT to
-;     the first wall is the PERPENDICULAR distance (no fish-eye), and the fine
-;     1/4-cell resolution gives smoothly tapering wall heights.
-;   * Distance indexes WallHeights -> wall column height in PIXELS. Each column
-;     is drawn into the BG tilemap ($9800) centred on the horizon: a ceiling
-;     run, the wall (near = light tile, far = dark tile for depth shading), and
-;     a floor run. The ceiling/wall and wall/floor boundaries land on an exact
-;     PIXEL row by using 28 sub-tile "transition" tiles (tiles 5..32: 7 split
-;     positions each for ceil/near, ceil/far, near/floor, far/floor), so the
-;     diagonal edges step by 1px instead of a whole 8px tile.
-;   * VRAM is only writable outside PPU mode 3, and a full 20x18 redraw is far
-;     bigger than one VBlank's window, so the redraw is bracketed by LCD-off /
-;     LCD-on. It only runs when the view changes (on move/turn), not per frame.
-; The view genuinely re-casts every time the player moves or turns; turning
-; only redraws (no move), moving re-casts from the new cell.
+; The DMG has no real bitmap mode, so we use the TILE DATA as a framebuffer:
+;   * A 16x9 block of unique tiles (indices 0..143) is the framebuffer — a
+;     128x72 pixel bitmap. (Tilemap bytes are 8-bit, so only 256 tiles are
+;     addressable; 128x72 leaves room for a border tile.)
+;   * A polling RASTER loop rewrites SCY every scanline so each of the 72
+;     source rows is shown on TWO screen lines (line-doubling), stretching the
+;     bitmap to the full 144px height. SCX centres it horizontally (128 wide,
+;     16px border each side). (A real STAT/HBlank interrupt would do the same,
+;     but this assembler can't place code at the $0048 vector, so we poll LY.)
+;   * The raycaster renders PER PIXEL into the bitmap: one ray per screen
+;     COLUMN (128 of them). Each ray steps in 8.8 fixed point — a constant
+;     forward delta (64 = 1/4 cell) plus a per-column perpendicular delta
+;     (PerpStep) so the rays fan like a camera. NO multiply. The forward
+;     component is constant, so the step count is the PERPENDICULAR distance
+;     (no fish-eye); it indexes WallHeights -> wall pixel height. The column is
+;     filled ceiling / wall (near=light, far=dark) / floor at exact pixels.
+;   * The full bitmap redraw is far bigger than one VBlank, so it runs with the
+;     LCD off, only when the view changes (on move/turn), not every frame.
 ; ---------------------------------------------------------------------
 ;
 ; Memory map (WRAM vars):
-;   $C0A0 px   (player cell X, 0..7)
-;   $C0A1 py   (player cell Y, 0..7)
-;   $C0A2 dir  (0=N 1=E 2=S 3=W)
-;   $C0A3 inputLatch (debounce: keys held last frame)
+;   $C0A0 px   (player cell X, 0..7)      $C0A1 py  (player cell Y, 0..7)
+;   $C0A2 dir  (0=N 1=E 2=S 3=W)          $C0A3 inputLatch
+;   $C0B0..B7 colStart[8]  $C0B8..BF colEnd[8]  $C0C0..C7 colColor[8]
+;   $C0C8..CF ray-cast scratch   $C0D0..DA render loop scratch
 
 SECTION "code", ROM0
 
 MAXSTEPS  EQU 28        ; max ray steps before "open" (4 steps = 1 cell)  ; TWEAK + F5
 NEAR_CUT  EQU 12        ; dist (1/4 cells) below this = bright near-wall tile  ; TWEAK + F5
+BORDER    EQU 144       ; tile index used for the left/right border
 
 Main:
     ld sp, $FFFE
     xor a
     ldh ($40), a             ; LCD off (safe to touch VRAM)
 
-    ; --- Load tiles 1..32 -> $8010 (16 bytes each, contiguous) ---
-    ;   1 near-wall 2 far-wall 3 ceiling 4 floor, then 28 edge-smoothing
-    ;   transition tiles (5..32): ceil/near, ceil/far, near/floor, far/floor,
-    ;   each at 7 sub-tile split rows so wall edges step by 1px, not 8px.
-    ld hl, .Tiles
-    ld de, $8010
-    ld bc, $0200             ; 32 tiles * 16 bytes
-    call .CopyBC
+    ; --- border tile (tile 144) -> $8900 : solid color 2 (dark frame) ---
+    ld hl, $8900
+    ld b, 8
+.bord:
+    xor a
+    ld (hl+), a              ; plane0 = 0
+    ld a, $FF
+    ld (hl+), a             ; plane1 = $FF -> color 2
+    dec b
+    jr nz, .bord
 
-    ; --- Clear BG tilemap $9800..$9BFF to tile 0 ---
+    ; --- fill the whole tilemap with the border tile ---
     ld hl, $9800
     ld bc, $0400
 .clrmap:
-    xor a
+    ld a, BORDER
     ld (hl+), a
     dec bc
     ld a, b
     or c
     jr nz, .clrmap
 
+    ; --- lay the 16x9 framebuffer tile indices at rows 0..8, cols 0..15 ---
+    ;     cell (row,col) -> tile row*16 + col
+    ld hl, $9800
+    xor a
+    ld ($C0D2), a            ; row = 0
+.mapRow:
+    push hl
+    ld a, ($C0D2)
+    swap a                   ; row*16 (row<=8 -> <=128)
+    ld c, a                  ; base tile index for this row
+    ld b, 16
+.mapCol:
+    ld a, c
+    ld (hl+), a
+    inc c
+    dec b
+    jr nz, .mapCol
+    pop hl
+    push de
+    ld de, 32
+    add hl, de
+    pop de
+    ld a, ($C0D2)
+    inc a
+    ld ($C0D2), a
+    cp 9
+    jr c, .mapRow
+
+    ; --- palette, scroll (SCX centres the 128-wide bitmap), player, APU ---
     ld a, $E4
     ldh ($47), a             ; BGP
+    ld a, 240
+    ldh ($43), a             ; SCX = -16 -> bitmap (BG col 0..127) shows at x16..143
+    xor a
+    ldh ($42), a             ; SCY = 0
 
-    ; --- Init player vars: stand in the corridor (cell 4,6) facing North,
-    ;     looking straight down it to the far wall ---
     ld a, 4
     ld ($C0A0), a            ; px
     ld a, 6
     ld ($C0A1), a            ; py
     xor a
     ld ($C0A2), a            ; dir = North
-    xor a
     ld ($C0A3), a            ; input latch
 
-    ; --- Sound: power on APU (optional SFX on bump/turn) ---
     ld a, $80
-    ldh ($26), a             ; NR52 on (write FIRST)
+    ldh ($26), a             ; NR52 APU on
     ld a, $77
     ldh ($24), a             ; NR50 master vol
     ld a, $FF
     ldh ($25), a             ; NR51 route all
 
-    ; --- First render while the LCD is still OFF, so the full 20x18 tilemap
-    ;     redraw is never dropped (VRAM is only writable outside PPU mode 3). ---
-    call CastAndDraw
+    ; --- first render while LCD off (VRAM fully writable) ---
+    call CastColumns
 
     ; --- LCD on: tiledata $8000, BG map $9800, BG on ---
     ld a, $91
     ldh ($40), a
 
-; -------------------- MAIN LOOP (F5 hot-reload zone) --------------------
+; -------------------- MAIN LOOP --------------------
 .loop:
 .waitvbl:
     ldh a, ($44)             ; LY
-    cp $90                   ; 144 = VBlank start
-    jr nz, .waitvbl
+    cp 144
+    jr c, .waitvbl           ; wait for VBlank
 
-    call ReadInput           ; turns / moves the player; sets a "dirty" flag in B
-    ; ReadInput returns A != 0 if the view must be redrawn this frame.
+    call ReadInput           ; turns / moves; A != 0 if the view must redraw
     or a
-    jr z, .nodraw
-    ; A full-screen tilemap redraw is far bigger than one VBlank's writable
-    ; window, so blank the LCD (VRAM fully writable), re-cast, then re-enable.
-    ; We are in VBlank here (LY=$90), the safe point to toggle the LCD.
+    jr z, .noRedraw
+    ; full bitmap redraw needs the LCD off (far bigger than one VBlank)
     xor a
     ldh ($40), a             ; LCD off
-    call CastAndDraw         ; <-- F5 RENDERER (re-casts all 20 columns)
+    call CastColumns         ; <-- F5 RENDERER (128 per-pixel ray columns)
     ld a, $91
     ldh ($40), a             ; LCD on
-.nodraw:
-
-.waitend:
-    ldh a, ($44)
-    cp $90
-    jr z, .waitend
+.noRedraw:
+    call RasterFrame         ; line-double the bitmap for one visible frame
     jr .loop
 
-; --- helper: copy BC bytes HL->DE ---
-.CopyBC:
-    ld a, (hl+)
-    ld (de), a
-    inc de
-    dec bc
-    ld a, b
-    or c
-    jr nz, .CopyBC
-    ret
-
-.Tiles:
-    incbin "examples/rc_wall_lt.2bpp"    ; 1 near wall (light)
-    incbin "examples/rc_wall_dk.2bpp"    ; 2 far wall  (dark)
-    incbin "examples/rc_ceiling.2bpp"    ; 3 ceiling
-    incbin "examples/rc_floor.2bpp"      ; 4 floor
-    ; 5..32: edge-smoothing transition tiles (7 sub-tile splits each):
-    ;   5..11 ceil/near  12..18 ceil/far  19..25 near/floor  26..32 far/floor
-    incbin "examples/rc_trans.2bpp"
+; ====================== RASTER (line-doubling) ======================
+; RasterFrame — for one visible frame, rewrite SCY each scanline so screen
+; lines 2n and 2n+1 both show framebuffer row n (SCY = -ceil(LY/2)). Returns at
+; VBlank. Pure polling: no interrupts. Clobbers A,B,D.
+RasterFrame:
+.w0:
+    ldh a, ($44)
+    or a
+    jr nz, .w0               ; wait for LY == 0 (top of frame)
+    xor a
+    ldh ($42), a             ; SCY = 0 for line 0
+    ld d, 0                  ; d = running SCY value
+    ld b, 0                  ; b = last LY seen
+.ll:
+    ldh a, ($44)
+    cp b
+    jr z, .ll                ; wait until LY advances
+    ld b, a
+    cp 144
+    ret nc                   ; reached VBlank -> frame done
+    bit 0, b                 ; odd scanline?
+    jr z, .even
+    dec d                    ; step the source row every 2 screen lines
+.even:
+    ld a, d
+    ldh ($42), a             ; SCY for this line (set during mode 2, before draw)
+    jr .ll
 
 ; ====================== INPUT ======================
 ; ReadInput — edge-detected d-pad. Left/Right rotate dir; Up/Down step the
-; player cell forward/back if not blocked by a wall. Returns A=1 if anything
-; changed (so the loop redraws), A=0 otherwise. Uses $C0A3 as the held-latch.
+; player cell. Returns A=1 if anything changed (redraw), else 0. $C0A3 = latch.
 ReadInput:
-    ld a, $20                ; select directions
+    ld a, $20
     ldh ($00), a
-    ldh a, ($00)            ; settle
     ldh a, ($00)
-    ld b, a                  ; b = raw read (0=pressed) bits0R 1L 2U 3D
+    ldh a, ($00)
+    ld b, a
     ld a, $30
-    ldh ($00), a            ; deselect
-    ; pressed mask = (~b) & $0F  (1 = pressed)
+    ldh ($00), a
     ld a, b
     cpl
     and $0F
-    ld b, a                  ; b = pressed mask
-    ; edge = pressed & ~latch
+    ld b, a                  ; b = pressed mask (1=pressed)
     ld a, ($C0A3)
     cpl
     and b
     ld c, a                  ; c = newly-pressed edges
     ld a, b
-    ld ($C0A3), a            ; store latch = current pressed
-    ; --- process edges in C ---
+    ld ($C0A3), a            ; latch = current pressed
     xor a
-    ld d, a                  ; d = "changed" accumulator
-    ; Right (bit0) -> turn right (dir+1)
-    bit 0, c
+    ld d, a                  ; d = changed accumulator
+    bit 0, c                 ; Right -> turn right
     jr z, .noR
     ld a, ($C0A2)
     inc a
@@ -195,8 +212,7 @@ ReadInput:
     ld d, 1
     call SfxTurn
 .noR:
-    ; Left (bit1) -> turn left (dir-1)
-    bit 1, c
+    bit 1, c                 ; Left -> turn left
     jr z, .noL
     ld a, ($C0A2)
     dec a
@@ -205,28 +221,26 @@ ReadInput:
     ld d, 1
     call SfxTurn
 .noL:
-    ; Up (bit2) -> step forward
-    bit 2, c
+    bit 2, c                 ; Up -> step forward
     jr z, .noU
-    ld e, 1                  ; e=1 forward
+    push bc                  ; TryMove clobbers C (edge mask) — preserve it
+    ld e, 1
     call TryMove
+    pop bc
     ld d, 1
 .noU:
-    ; Down (bit3) -> step back
-    bit 3, c
+    bit 3, c                 ; Down -> step back
     jr z, .noD
-    ld e, 0                  ; e=0 backward
+    ld e, 0
     call TryMove
     ld d, 1
 .noD:
-    ld a, d                  ; return changed flag
+    ld a, d
     ret
 
 ; TryMove — step the player one cell. In: E=1 forward, E=0 backward.
-; Computes target cell from dir, checks Maze; commits only if empty.
-; Clobbers A,B,C,H,L.
+; Commits only if the target cell is empty. Clobbers A,B,C,D,H,L.
 TryMove:
-    ; fetch dx = DirDX[dir] -> D
     ld hl, DirDX
     ld a, ($C0A2)
     add a, l
@@ -234,8 +248,7 @@ TryMove:
     ld a, h
     adc a, 0
     ld h, a
-    ld d, (hl)               ; d = dx (signed -1/0/1)
-    ; fetch dy = DirDY[dir] -> C
+    ld d, (hl)               ; dx
     ld hl, DirDY
     ld a, ($C0A2)
     add a, l
@@ -243,8 +256,7 @@ TryMove:
     ld a, h
     adc a, 0
     ld h, a
-    ld c, (hl)               ; c = dy
-    ; backward? (E==0) negate both
+    ld c, (hl)               ; dy
     ld a, e
     or a
     jr nz, .fwd
@@ -256,32 +268,29 @@ TryMove:
     ld c, a
 .fwd:
     ld a, ($C0A0)
-    add a, d                 ; tx = px + dx
-    ld b, a                  ; b = tx
+    add a, d
+    ld b, a                  ; tx
     ld a, ($C0A1)
-    add a, c                 ; ty = py + dy
-    ld c, a                  ; c = ty
-    ; bounds 0..7 (underflow shows >=200)
+    add a, c
+    ld c, a                  ; ty
     ld a, b
     cp 8
     jr nc, .blocked
     ld a, c
     cp 8
     jr nc, .blocked
-    ; check Maze[ty*8 + tx]
     ld a, c
     add a, a
     add a, a
-    add a, a                 ; ty*8
-    add a, b                 ; + tx
+    add a, a
+    add a, b
     ld l, a
     ld h, 0
     ld de, Maze
     add hl, de
     ld a, (hl)
     or a
-    jr nz, .blocked          ; wall -> reject
-    ; commit
+    jr nz, .blocked
     ld a, b
     ld ($C0A0), a
     ld a, c
@@ -291,352 +300,379 @@ TryMove:
     call SfxBump
     ret
 
-; ====================== RENDERER (F5) ======================
-; CastAndDraw — cast one ray per BG column (20) and paint the column into the
-; tilemap. Fine 8.8 fixed-point stepping, no multiply. Constants below are the
-; live-edit lens.  ; TWEAK + F5
-;
-; Each column's ray starts at the player cell centre and advances by a constant
-; FORWARD delta (64 = 1/4 cell per step) plus a per-column PERPENDICULAR delta
-; (PerpStep table) so the 20 rays fan out like a camera. Because the forward
-; component is a constant 1/4 cell, the STEP COUNT is the perpendicular distance
-; (no fish-eye), and the fine 1/4-cell resolution gives smooth wall heights. The
-; ray steps until it lands in a wall; the step count indexes WallHeights.
-;
-; WRAM scratch: $C0B0 col, $C0B2/3 posX, $C0B4/5 posY, $C0B6/7 dX, $C0B8/9 dY,
-;               $C0BA wall tile.  B (across the step loop) = distance index.
-CastAndDraw:
-    xor a
-    ld ($C0B0), a            ; col = 0
-.colLoop:
-    ; --- PerpStep[col] -> E (signed lateral delta per step) ---
-    ld a, ($C0B0)
-    ld l, a
-    ld h, 0
-    ld de, PerpStep          ; ; TWEAK + F5 (per-column fan / FOV)
-    add hl, de
-    ld a, (hl)
-    ld e, a
-    ; --- per-step dX (B) and dY (C) from dir; FWD = 64 ---
-    ld a, ($C0A2)
+; ====================== RAY CAST ======================
+; CastRay — cast one column ray. In: E = PerpStep (signed lateral delta/step).
+; Out: B = distance (steps, 0..MAXSTEPS). Clobbers A,C,D,E,H,L. (B is result.)
+CastRay:
+    ld a, ($C0A2)            ; dir -> per-step dX(B), dY(C); FWD=64
     or a
-    jr nz, .dE
-    ld b, e                  ; N: dX=+perp, dY=-64
+    jr nz, .cE
+    ld b, e
     ld c, -64
-    jr .haveDelta
-.dE:
+    jr .cd
+.cE:
     cp 1
-    jr nz, .dS
-    ld b, 64                 ; E: dX=+64, dY=+perp
+    jr nz, .cS
+    ld b, 64
     ld c, e
-    jr .haveDelta
-.dS:
+    jr .cd
+.cS:
     cp 2
-    jr nz, .dW
-    xor a                    ; S: dX=-perp, dY=+64
+    jr nz, .cW
+    xor a
     sub e
     ld b, a
     ld c, 64
-    jr .haveDelta
-.dW:
-    ld b, -64               ; W: dX=-64, dY=-perp
+    jr .cd
+.cW:
+    ld b, -64
     xor a
     sub e
     ld c, a
-.haveDelta:
-    ; --- ray pos = cell centre (8.8): posX = px*256+128, posY = py*256+128 ---
-    ld a, ($C0A0)
-    ld ($C0B3), a
+.cd:
+    ld a, ($C0A0)            ; pos = cell centre (8.8)
+    ld ($C0C9), a            ; posX hi
     ld a, 128
-    ld ($C0B2), a
+    ld ($C0C8), a            ; posX lo
     ld a, ($C0A1)
-    ld ($C0B5), a
+    ld ($C0CB), a            ; posY hi
     ld a, 128
-    ld ($C0B4), a
-    ; sign-extend dX (B) -> $C0B6/7
-    ld a, b
-    ld ($C0B6), a
+    ld ($C0CA), a            ; posY lo
+    ld a, b                  ; sign-extend dX -> $C0CC/CD
+    ld ($C0CC), a
     add a, a
     sbc a, a
-    ld ($C0B7), a
-    ; sign-extend dY (C) -> $C0B8/9
-    ld a, c
-    ld ($C0B8), a
+    ld ($C0CD), a
+    ld a, c                  ; sign-extend dY -> $C0CE/CF
+    ld ($C0CE), a
     add a, a
     sbc a, a
-    ld ($C0B9), a
-
-    ; --- step the ray; B counts steps = perpendicular distance ---
-    ld b, 0
-.stepLoop:
-    ; posX += dX
-    ld a, ($C0B2)
+    ld ($C0CF), a
+    ld b, 0                  ; b = step count
+.rl:
+    ld a, ($C0C8)            ; posX += dX
     ld l, a
-    ld a, ($C0B6)
+    ld a, ($C0CC)
     add a, l
-    ld ($C0B2), a
-    ld a, ($C0B3)
+    ld ($C0C8), a
+    ld a, ($C0C9)
     ld h, a
-    ld a, ($C0B7)
+    ld a, ($C0CD)
     adc a, h
-    ld ($C0B3), a
-    ; posY += dY
-    ld a, ($C0B4)
+    ld ($C0C9), a
+    ld a, ($C0CA)            ; posY += dY
     ld l, a
-    ld a, ($C0B8)
+    ld a, ($C0CE)
     add a, l
-    ld ($C0B4), a
-    ld a, ($C0B5)
+    ld ($C0CA), a
+    ld a, ($C0CB)
     ld h, a
-    ld a, ($C0B9)
+    ld a, ($C0CF)
     adc a, h
-    ld ($C0B5), a
-    ; cell = (posY.hi)*8 + posX.hi ; bounds + wall test
-    ld a, ($C0B3)            ; cellX
+    ld ($C0CB), a
+    ld a, ($C0C9)            ; cellX
     cp 8
-    jr nc, .hit              ; out of maze -> wall at this distance
+    jr nc, .rhit
     ld d, a
-    ld a, ($C0B5)            ; cellY
+    ld a, ($C0CB)            ; cellY
     cp 8
-    jr nc, .hit
+    jr nc, .rhit
     add a, a
     add a, a
-    add a, a                 ; cellY*8
-    add a, d                 ; + cellX
+    add a, a
+    add a, d
     ld l, a
     ld h, 0
     ld de, Maze
     add hl, de
     ld a, (hl)
     or a
-    jr nz, .hit              ; wall
+    jr nz, .rhit
     inc b
     ld a, b
     cp MAXSTEPS
-    jr c, .stepLoop
-    ld b, MAXSTEPS           ; no hit within range -> far wall
-.hit:
-    ; B = distance index. H (PIXELS) = WallHeights[B].
-    ld a, b
+    jr c, .rl
+    ld b, MAXSTEPS
+.rhit:
+    ret
+
+; ====================== RENDERER (F5) ======================
+; CastColumns — render the 128x72 bitmap. For each of 16 tile columns: cast the
+; 8 rays it covers, then build its 9 framebuffer tiles. Ceiling=color0,
+; floor=color3, near wall=color1, far wall=color2; wall centred on row 36.
+CastColumns:
+    xor a
+    ld ($C0D0), a            ; tx = 0
+.txLoop:
+    ; --- cast the 8 rays for this tile column ---
+    xor a
+    ld ($C0D1), a            ; j = 0
+    ld a, $FF
+    ld ($C0D8), a            ; minStart = 255
+    xor a
+    ld ($C0D9), a            ; maxEnd = 0
+.castJ:
+    ld a, ($C0D0)            ; x = tx*8 + j
+    add a, a
+    add a, a
+    add a, a
+    ld c, a
+    ld a, ($C0D1)
+    add a, c
+    ld l, a
+    ld h, 0
+    ld de, PerpStep          ; ; TWEAK + F5 (per-column fan / FOV)
+    add hl, de
+    ld a, (hl)
+    ld e, a                  ; perp
+    call CastRay             ; -> B = dist
+    ld a, b                  ; H (pixels) = WallHeights[dist]
     ld l, a
     ld h, 0
     ld de, WallHeights       ; ; TWEAK + F5 (distance->pixel-height curve)
     add hl, de
-    ld a, (hl)               ; a = H (wall pixel height)
+    ld a, (hl)
     ld c, a                  ; c = H
-    ; centre on the horizon (row 72): DS = 72 - H/2 ; DEp = DS + H
     srl a                    ; H/2
-    ld d, a
-    ld a, 72
-    sub d
-    ld ($C0BD), a            ; DS  (wall-top pixel)
-    add a, c
-    ld ($C0BE), a            ; DEp (wall-bottom pixel)
-    ; --- near/far tile set by distance (solid + its two transition bases) ---
+    ld e, a
+    ld a, 36
+    sub e                    ; drawStart = 36 - H/2
+    ld d, a                  ; d = drawStart
+    add a, c                 ; drawEnd = drawStart + H
+    ld e, a                  ; e = drawEnd
+    ; store colStart[j], colEnd[j]
+    ld a, ($C0D1)
+    add a, $B0
+    ld l, a
+    ld h, $C0
+    ld a, d
+    ld (hl), a               ; colStart[j]
+    ld a, ($C0D1)
+    add a, $B8
+    ld l, a
+    ld a, e
+    ld (hl), a               ; colEnd[j]
+    ; minStart / maxEnd
+    ld a, d
+    ld hl, $C0D8
+    cp (hl)
+    jr nc, .noMin
+    ld (hl), a
+.noMin:
+    ld a, e
+    ld hl, $C0D9
+    cp (hl)
+    jr c, .noMax
+    ld (hl), a
+.noMax:
+    ; colColor[j] = near/far by dist (B)
     ld a, b
     cp NEAR_CUT              ; ; TWEAK + F5 (near/far shading cutoff)
-    jr nc, .farSet
     ld a, 1
-    ld ($C0BA), a            ; near wall solid
-    ld a, 5
-    ld ($C0BB), a            ; ceil/near transition base (tiles 5..11)
-    ld a, 19
-    ld ($C0BC), a            ; near/floor transition base (tiles 19..25)
-    jr .haveSet
-.farSet:
+    jr c, .nearC
     ld a, 2
-    ld ($C0BA), a            ; far wall solid
-    ld a, 12
-    ld ($C0BB), a            ; ceil/far transition base (tiles 12..18)
-    ld a, 26
-    ld ($C0BC), a            ; far/floor transition base (tiles 26..32)
-.haveSet:
-    ; --- column base address $9800 + col -> HL (col<20, no hi carry) ---
-    ld a, ($C0B0)
-    ld l, a
-    ld h, $98
-
-    ; --- ceiling: ta = DS>>3 full ceiling tiles (tile 3) ---
-    ld a, ($C0BD)
-    srl a
-    srl a
-    srl a                    ; ta
-    ld b, a
-.dCeil:
-    ld a, b
-    or a
-    jr z, .dCeilEnd
-    ld a, 3
-    ld (hl), a
-    push bc
-    ld bc, 32
-    add hl, bc
-    pop bc
-    dec b
-    jr .dCeil
-.dCeilEnd:
-    ; --- top transition tile if ka = DS&7 > 0 (ka px ceiling, rest wall) ---
-    ld a, ($C0BD)
-    and 7
-    jr z, .noTop
-    dec a
-    ld b, a                  ; ka-1
-    ld a, ($C0BB)
-    add a, b                 ; topBase + (ka-1)
-    ld (hl), a
-    push bc
-    ld bc, 32
-    add hl, bc
-    pop bc
-.noTop:
-    ; --- full wall: count = (DEp>>3) - (DS>>3) - (ka>0 ? 1 : 0) ---
-    ld a, ($C0BE)
-    srl a
-    srl a
-    srl a                    ; tb
-    ld b, a
-    ld a, ($C0BD)
-    srl a
-    srl a
-    srl a                    ; ta
+.nearC:
     ld c, a
-    ld a, b
-    sub c                    ; tb - ta
-    ld b, a
-    ld a, ($C0BD)
-    and 7
-    jr z, .noTopAdj
-    dec b                    ; minus the top-transition row
-.noTopAdj:
-    ld a, ($C0BA)
-    ld c, a                  ; c = wall solid tile
-.dWall:
-    ld a, b
-    or a
-    jr z, .dWallEnd
-    ld (hl), c
-    push bc
-    ld bc, 32
-    add hl, bc
-    pop bc
-    dec b
-    jr .dWall
-.dWallEnd:
-    ; --- bottom transition tile if kb = DEp&7 > 0 (kb px wall, rest floor) ---
-    ld a, ($C0BE)
-    and 7
-    jr z, .noBot
-    dec a
-    ld b, a                  ; kb-1
-    ld a, ($C0BC)
-    add a, b                 ; botBase + (kb-1)
-    ld (hl), a
-    push bc
-    ld bc, 32
-    add hl, bc
-    pop bc
-.noBot:
-    ; --- floor: count = 18 - (DEp>>3) - (kb>0 ? 1 : 0) ---
-    ld a, ($C0BE)
-    srl a
-    srl a
-    srl a                    ; tb
-    ld b, a
-    ld a, 18
-    sub b                    ; 18 - tb
-    ld b, a
-    ld a, ($C0BE)
-    and 7
-    jr z, .noBotAdj
-    dec b                    ; minus the bottom-transition row
-.noBotAdj:
-.dFloor:
-    ld a, b
-    or a
-    jr z, .dFloorEnd
-    ld a, 4
-    ld (hl), a
-    push bc
-    ld bc, 32
-    add hl, bc
-    pop bc
-    dec b
-    jr .dFloor
-.dFloorEnd:
-
-    ; --- next column ---
-    ld a, ($C0B0)
+    ld a, ($C0D1)
+    add a, $C0
+    ld l, a
+    ld h, $C0
+    ld a, c
+    ld (hl), a               ; colColor[j]
+    ld a, ($C0D1)
     inc a
-    ld ($C0B0), a
-    cp 20
-    jp c, .colLoop
+    ld ($C0D1), a
+    cp 8
+    jp c, .castJ
+
+    ; --- build the 9 framebuffer tiles for this tx ---
+    xor a
+    ld ($C0D2), a            ; ty = 0
+.tyLoop:
+    ld a, ($C0D0)            ; tileAddr = $8000 + (ty*16+tx)*16
+    swap a                   ; tx*16
+    ld ($C0D6), a            ; tileAddr lo
+    ld a, ($C0D2)
+    add a, $80
+    ld ($C0D7), a            ; tileAddr hi = $80 + ty
+    ld a, ($C0D2)            ; tileTop = ty*8
+    add a, a
+    add a, a
+    add a, a
+    ld ($C0DA), a            ; tileTop
+    ; all ceiling? (tileTop+7) < minStart
+    add a, 7                 ; tileBot
+    ld c, a
+    ld a, ($C0D8)            ; minStart
+    ld b, a
+    ld a, c
+    cp b
+    jr nc, .notCeil          ; tileBot >= minStart -> not all ceiling
+    xor a                    ; ceiling color0 -> $00
+    call .Fill16
+    jr .nextTy
+.notCeil:
+    ld a, ($C0DA)            ; tileTop
+    ld c, a
+    ld a, ($C0D9)            ; maxEnd
+    ld b, a
+    ld a, c
+    cp b
+    jr c, .perPixel          ; tileTop < maxEnd -> mixed
+    ld a, $FF                ; floor color3 -> $FF
+    call .Fill16
+    jr .nextTy
+.perPixel:
+    xor a
+    ld ($C0D3), a            ; prow = 0
+.prowLoop:
+    ld a, ($C0DA)            ; y = tileTop + prow
+    ld c, a
+    ld a, ($C0D3)
+    add a, c
+    ld ($C0D4), a            ; y
+    ld d, 0                  ; p0
+    ld e, 0                  ; p1
+    ld b, 0                  ; j
+.bitJ:
+    ld a, b                  ; start[j]
+    add a, $B0
+    ld l, a
+    ld h, $C0
+    ld a, ($C0D4)
+    cp (hl)
+    jr c, .pcCeil            ; y < start -> ceiling (0)
+    ld a, b                  ; end[j]
+    add a, $B8
+    ld l, a
+    ld a, ($C0D4)
+    cp (hl)
+    jr nc, .pcFloor          ; y >= end -> floor (3)
+    ld a, b                  ; wall color[j]
+    add a, $C0
+    ld l, a
+    ld a, (hl)
+    jr .pcHave
+.pcCeil:
+    xor a
+    jr .pcHave
+.pcFloor:
+    ld a, 3
+.pcHave:
+    ld c, a                  ; color
+    and 1
+    sla d
+    or d
+    ld d, a                  ; p0 = (p0<<1)|bit0
+    ld a, c
+    and 2
+    srl a
+    sla e
+    or e
+    ld e, a                  ; p1 = (p1<<1)|bit1
+    inc b
+    ld a, b
+    cp 8
+    jr c, .bitJ
+    ld a, ($C0D6)            ; write to tileAddr + prow*2
+    ld c, a
+    ld a, ($C0D3)
+    add a, a
+    add a, c
+    ld l, a
+    ld a, ($C0D7)
+    ld h, a
+    ld a, d
+    ld (hl+), a             ; plane0
+    ld a, e
+    ld (hl), a             ; plane1
+    ld a, ($C0D3)
+    inc a
+    ld ($C0D3), a
+    cp 8
+    jp c, .prowLoop
+.nextTy:
+    ld a, ($C0D2)
+    inc a
+    ld ($C0D2), a
+    cp 9
+    jp c, .tyLoop
+    ld a, ($C0D0)
+    inc a
+    ld ($C0D0), a
+    cp 16
+    jp c, .txLoop
+    ret
+
+; .Fill16 — write A to 16 bytes at tileAddr ($C0D6/D7). Preserves A.
+.Fill16:
+    push af
+    ld a, ($C0D6)
+    ld l, a
+    ld a, ($C0D7)
+    ld h, a
+    pop af
+    ld b, 16
+.f16:
+    ld (hl+), a
+    dec b
+    jr nz, .f16
     ret
 
 ; ====================== DATA TABLES ======================
-; Maze: 8x8, 1=wall 0=empty. Outer ring is wall; some inner walls form a maze.
+; Maze: 8x8, 1=wall 0=empty. A 1-wide corridor at x=4 with a far wall ahead.
 ; (Edit this and the start cell at $C0A0/$C0A1, then F8 to rebuild the world.)
 Maze:
     db 1,1,1,1,1,1,1,1
-    db 1,1,1,1,0,1,1,1     ; vvv 1-wide corridor at x=4: the side walls
-    db 1,1,1,1,0,1,1,1     ;     recede toward the far wall straight ahead
     db 1,1,1,1,0,1,1,1
     db 1,1,1,1,0,1,1,1
     db 1,1,1,1,0,1,1,1
-    db 1,1,1,1,0,1,1,1     ; player starts at (4,6), facing the far wall
+    db 1,1,1,1,0,1,1,1
+    db 1,1,1,1,0,1,1,1
+    db 1,1,1,1,0,1,1,1
     db 1,1,1,1,1,1,1,1
 
-; Direction deltas (dir 0=N 1=E 2=S 3=W), signed cell steps.
 DirDX:
     db 0, 1, 0, -1
 DirDY:
     db -1, 0, 1, 0
 
-; Slope[col] — signed 8.8 lateral cells per forward cell, one per BG column.
-; Linear camera plane: ~0 at centre, +/-112 (~tan 24deg) at the edges, so the
-; 20 columns fan out evenly. Widen for a fish-eye, narrow for a telephoto.
-; (Keep entries within signed-byte range -128..127.)  ; TWEAK + F5
-; PerpStep[col] — signed 8.8 lateral delta per forward step, one per BG column.
-; ~0 at the centre, +/-32 (forward delta is 64, so ~tan 27deg) at the edges, so
-; the 20 rays fan evenly. Widen for fish-eye, narrow for telephoto.  ; TWEAK + F5
+; PerpStep[col] — signed 8.8 lateral delta per step, one per of 128 columns.
+; Linear camera plane: ~0 at centre, +/-32 at the edges. (Generated.)  ; TWEAK + F5
 PerpStep:
-    db -32,-29,-25,-22,-19,-15,-12,-8,-5,-2,2,5,8,12,15,19,22,25,29,32
+    incbin "examples/rc_perp.bin"
 
-; WallHeights[dist 0..MAXSTEPS] -> wall height in PIXELS (dist in 1/4 cells).
-; Smooth perspective curve (near=tall, ~576/(dist+4)), precomputed so there is
-; no divide at runtime. The drawer renders pixel-accurate edges using the
-; transition tiles, so this can be any 8..144.  ; TWEAK + F5
+; WallHeights[dist 0..MAXSTEPS] -> wall height in PIXELS (dist in 1/4 cells,
+; max 72 = bitmap height). Smooth perspective curve (~360/(dist+5)).  ; TWEAK + F5
 WallHeights:
-    db 128,112,99,88,80,72,66,60,56,52,48,45,42,40,38,36,34,32,31,30,28,27,26,25,24,24,23,22,22
+    db 72,60,51,45,40,36,33,30,28,26,24,22,21,20,19,18,17,16,16,15,14,14,13,13,12,12,12,11,11
 
 ; ====================== SOUND ======================
-; SfxTone — short CH1 (pulse) blip. In: D=freq hi (bits2-0), E=freq lo.
-; Clobbers A; preserves B,C,HL (and D,E inputs).
+; SfxTone — short CH1 pulse blip. In: D=freq hi (bits2-0), E=freq lo.
 SfxTone:
     xor a
-    ldh ($10), a             ; NR10 no sweep
+    ldh ($10), a
     ld a, $A0
-    ldh ($11), a             ; NR11 duty + length
+    ldh ($11), a
     ld a, $F2
-    ldh ($12), a             ; NR12 vol 15, decay
+    ldh ($12), a
     ld a, e
-    ldh ($13), a             ; NR13 freq lo
+    ldh ($13), a
     ld a, d
     or $C0
-    ldh ($14), a             ; NR14 trigger + len-enable + freq hi
+    ldh ($14), a
     ret
 
-; SfxTurn — soft click when turning.  ; TWEAK + F5
-SfxTurn:
+SfxTurn:                     ; ; TWEAK + F5
     push de
-    ld de, $0700             ; TURN pitch
+    ld de, $0700
     call SfxTone
     pop de
     ret
 
-; SfxBump — low thud when a wall blocks movement.  ; TWEAK + F5
-SfxBump:
+SfxBump:                     ; ; TWEAK + F5
     push de
-    ld de, $0380             ; BUMP pitch (low)
+    ld de, $0380
     call SfxTone
     pop de
     ret

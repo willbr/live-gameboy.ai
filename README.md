@@ -100,7 +100,7 @@ for the `TRY THIS LIVE` recipe at the top of each file.
 | Asteroids | `examples/asteroids.asm` | F5 hot-reload `UpdateShip` thrust/friction mid-flight |
 | Platformer | `examples/platformer.asm` | F5 hot-reload `UpdatePlayer` gravity/jump feel |
 | Top-down | `examples/topdown.asm` | F5 hot-reload `MoveHero` speed/collision; paint walls to reshape the room |
-| Raycaster | `examples/raycaster.asm` | F5 hot-reload `CastAndDraw` view params (FOV/depth/shading) |
+| Raycaster | `examples/raycaster.asm` | Bitmap (tile-data framebuffer + line-doubling); F5 hot-reload `CastColumns` view params (FOV/depth) |
 | Driver | `examples/driver.asm` | F5 hot-reload `Drive` scroll/steer/accel constants |
 
 Build them as standalone ROMs with `make examples`, or take headless

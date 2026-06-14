@@ -19,11 +19,12 @@
 ;   * A 16x9 block of unique tiles (indices 0..143) is the framebuffer — a
 ;     128x72 pixel bitmap. (Tilemap bytes are 8-bit, so only 256 tiles are
 ;     addressable; 128x72 leaves room for a border tile.)
-;   * A polling RASTER loop rewrites SCY every scanline so each of the 72
-;     source rows is shown on TWO screen lines (line-doubling), stretching the
-;     bitmap to the full 144px height. SCX centres it horizontally (128 wide,
-;     16px border each side). (A real STAT/HBlank interrupt would do the same,
-;     but this assembler can't place code at the $0048 vector, so we poll LY.)
+;   * A STAT/HBlank interrupt (vector $0048) rewrites SCY every scanline so each
+;     of the 72 source rows is shown on TWO screen lines (line-doubling),
+;     stretching the bitmap to the full 144px height; a VBlank interrupt ($0040)
+;     resets SCY at the top of each frame. SCX centres it horizontally (128
+;     wide, 16px border each side). The ISRs sit in fixed-address sections
+;     (SECTION ... ROM0[$0040]/[$0048]) — gbasm supports located sections.
 ;   * The raycaster renders PER PIXEL into the bitmap: one ray per screen
 ;     COLUMN (128 of them). Each ray steps in 8.8 fixed point — a constant
 ;     forward delta (64 = 1/4 cell) plus a per-column perpendicular delta
@@ -41,11 +42,19 @@
 ;   $C0B0..B7 colStart[8]  $C0B8..BF colEnd[8]  $C0C0..C7 colColor[8]
 ;   $C0C8..CF ray-cast scratch   $C0D0..DA render loop scratch
 
-SECTION "code", ROM0
+; --- interrupt vectors (fixed-address sections; need gbasm's ROM0[$addr]) ---
+SECTION "vec_vblank", ROM0[$0040]
+    jp VBlankISR             ; VBlank: reset SCY=0 for the top of the next frame
+SECTION "vec_stat", ROM0[$0048]
+    jp StatISR               ; STAT mode-0 (HBlank): line-double via SCY
+
+; Main code starts above the header/vectors so it can't stomp them.
+SECTION "code", ROM0[$0150]
 
 MAXSTEPS  EQU 28        ; max ray steps before "open" (4 steps = 1 cell)  ; TWEAK + F5
 NEAR_CUT  EQU 12        ; dist (1/4 cells) below this = bright near-wall tile  ; TWEAK + F5
 BORDER    EQU 144       ; tile index used for the left/right border
+SCYACC    EQU $C0E0     ; WRAM: running SCY value the HBlank ISR walks down
 
 Main:
     ld sp, $FFFE
@@ -128,57 +137,78 @@ Main:
     ; --- first render while LCD off (VRAM fully writable) ---
     call CastColumns
 
+    ; --- arm the line-doubling interrupts ---
+    xor a
+    ld (SCYACC), a           ; SCY accumulator = 0
+    ldh ($42), a             ; SCY = 0 (line 0 of the first frame)
+    ld a, $08
+    ldh ($41), a             ; STAT: enable mode-0 (HBlank) interrupt source
+    ld a, $03
+    ldh ($FF), a             ; IE = VBlank + STAT
+    xor a
+    ldh ($0F), a             ; clear pending IF
+
     ; --- LCD on: tiledata $8000, BG map $9800, BG on ---
     ld a, $91
     ldh ($40), a
+    ei                       ; the HBlank/VBlank ISRs now line-double every frame
 
 ; -------------------- MAIN LOOP --------------------
+; The interrupts handle the display (line-doubling); the loop just reads input
+; once per frame and re-renders the bitmap (LCD off) when the view changes.
 .loop:
-.waitvbl:
-    ldh a, ($44)             ; LY
+    halt                     ; sleep until an interrupt (VBlank or HBlank)
+    ldh a, ($44)
     cp 144
-    jr c, .waitvbl           ; wait for VBlank
+    jr c, .loop              ; only act during VBlank (LY >= 144)
 
     call ReadInput           ; turns / moves; A != 0 if the view must redraw
     or a
     jr z, .noRedraw
     ; full bitmap redraw needs the LCD off (far bigger than one VBlank)
+    di
     xor a
     ldh ($40), a             ; LCD off
     call CastColumns         ; <-- F5 RENDERER (128 per-pixel ray columns)
+    xor a
+    ld (SCYACC), a           ; reset the line-double accumulator
+    ldh ($42), a             ; SCY = 0 for line 0 of the resumed frame
     ld a, $91
     ldh ($40), a             ; LCD on
+    ei
 .noRedraw:
-    call RasterFrame         ; line-double the bitmap for one visible frame
+    ; wait out the rest of VBlank so we handle input once per frame
+.we:
+    ldh a, ($44)
+    cp 144
+    jr nc, .we
     jr .loop
 
-; ====================== RASTER (line-doubling) ======================
-; RasterFrame — for one visible frame, rewrite SCY each scanline so screen
-; lines 2n and 2n+1 both show framebuffer row n (SCY = -ceil(LY/2)). Returns at
-; VBlank. Pure polling: no interrupts. Clobbers A,B,D.
-RasterFrame:
-.w0:
-    ldh a, ($44)
-    or a
-    jr nz, .w0               ; wait for LY == 0 (top of frame)
+; ====================== LINE-DOUBLING ISRs ======================
+; The 128x72 bitmap is stretched to 144px by showing each source row on two
+; screen lines: scanline N is drawn with SCY = -ceil(N/2). The VBlank ISR
+; resets SCY to 0 at the top of the frame; the HBlank (STAT mode-0) ISR walks
+; SCY down by 1 every two scanlines.
+VBlankISR:
+    push af
     xor a
     ldh ($42), a             ; SCY = 0 for line 0
-    ld d, 0                  ; d = running SCY value
-    ld b, 0                  ; b = last LY seen
-.ll:
-    ldh a, ($44)
-    cp b
-    jr z, .ll                ; wait until LY advances
-    ld b, a
-    cp 144
-    ret nc                   ; reached VBlank -> frame done
-    bit 0, b                 ; odd scanline?
-    jr z, .even
-    dec d                    ; step the source row every 2 screen lines
-.even:
-    ld a, d
-    ldh ($42), a             ; SCY for this line (set during mode 2, before draw)
-    jr .ll
+    ld (SCYACC), a           ; accumulator = 0
+    pop af
+    reti
+
+StatISR:                     ; fires at each visible line's HBlank (after draw)
+    push af
+    ldh a, ($44)             ; LY of the line just drawn
+    and 1
+    jr nz, .odd              ; only step every other line
+    ld a, (SCYACC)
+    dec a                    ; advance to the next source row
+    ld (SCYACC), a
+    ldh ($42), a             ; SCY for the NEXT scanline
+.odd:
+    pop af
+    reti
 
 ; ====================== INPUT ======================
 ; ReadInput — edge-detected d-pad. Left/Right rotate dir; Up/Down step the

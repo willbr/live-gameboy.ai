@@ -458,6 +458,40 @@ static void test_jr_cc(void)
 }
 
 /* =========================================================================
+ * Fixed-address ROM0 section: SECTION "v", ROM0[$0048] pins code at $0048
+ * (used for interrupt vectors). The byte must land at linear offset 0x48, and
+ * the main code (default origin) must still be placed normally above it.
+ * ======================================================================= */
+static void test_rom0_fixed_addr(void)
+{
+    const char *src =
+        "    SECTION \"stat\", ROM0[$0048]\n"
+        "    jp Handler\n"
+        "    SECTION \"code\", ROM0\n"
+        "Main:\n"
+        "    ds 300\n"          /* big enough that the slot clears the header */
+        "Handler:\n"
+        "    reti\n";
+
+    AsmResult r = asm_assemble(src, "test_fixed.asm");
+    ASSERT_TRUE(r.ok);
+    if (!r.ok) { asm_free(&r); return; }
+
+    /* jp Handler emitted at the STAT vector ($0048): C3 lo hi */
+    ASSERT_EQ(r.rom[0x0048], 0xC3);
+    const AsmSymbol *h = find_sym(&r, "Handler");
+    ASSERT_TRUE(h != NULL);
+    ASSERT_EQ(r.rom[0x0049], (uint8_t)(h->addr & 0xFF));
+    ASSERT_EQ(r.rom[0x004A], (uint8_t)(h->addr >> 8));
+
+    /* Main lands at the normal code origin (>= $0150), not at the vector. */
+    const AsmSymbol *m = find_sym(&r, "Main");
+    ASSERT_TRUE(m != NULL);
+    ASSERT_TRUE(m->addr >= 0x0150);
+    asm_free(&r);
+}
+
+/* =========================================================================
  * Task 5, Test 16: ROMX multi-bank section
  *
  * SECTION "x", ROMX, BANK[2] places code at cpu addr 0x4000, bank 2.
@@ -975,6 +1009,7 @@ int main(void)
 
     /* Task 5 tests */
     test_romx_bank();
+    test_rom0_fixed_addr();
     test_cartridge_header();
     test_incbin();
     test_include();

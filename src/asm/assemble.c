@@ -528,16 +528,20 @@ static void linemap_push(AsmResult *r, int line, uint32_t off)
 /* -------------------------------------------------------------------------
  * SECTION directive argument parser
  *
- * Syntax: "name", ROM0  or  "name", ROMX, BANK[n]
- * For Task 4 we only support ROM0 (bank 0); ROMX is stubbed at bank 1+.
+ * Syntax: "name", ROM0  or  "name", ROM0[$addr]  or  "name", ROMX, BANK[n]
+ * The optional [$addr] pins the section at a fixed CPU address — used for the
+ * interrupt vectors ($0040 VBlank, $0048 STAT, ...) which must live below the
+ * default code origin. Such sections hold only raw code/data (no global
+ * labels), so the function layout pass leaves them placed verbatim.
  * Returns true and sets *bank, *org if the section header was parsed.
  * ----------------------------------------------------------------------- */
 
 static bool parse_section_args(const AsmToken *toks, int start, int count,
-                                int *bank, uint16_t *org)
+                                int *bank, uint16_t *org, bool *located)
 {
     *bank = 0;
     *org  = 0x0000;
+    if (located) *located = false;
 
     int end = start + count;
     int i   = start;
@@ -564,6 +568,21 @@ static bool parse_section_args(const AsmToken *toks, int start, int count,
     }
     i++;
 
+    /* Optional explicit address immediately after the type: ROM0[$addr].
+     * (Distinct from ROMX's ", BANK[n]", which is preceded by a comma.) */
+    bool have_addr = false;
+    if (i < end && toks[i].kind == TOK_PUNCT && toks[i].text[0] == '[') {
+        i++;
+        if (i < end && toks[i].kind == TOK_NUMBER) {
+            *org = (uint16_t)toks[i].value;
+            have_addr = true;
+            if (located) *located = true;
+            i++;
+        }
+        if (i < end && toks[i].kind == TOK_PUNCT && toks[i].text[0] == ']')
+            i++;
+    }
+
     /* Optional BANK[n] */
     if (is_romx && i < end) {
         /* skip comma */
@@ -583,8 +602,8 @@ static bool parse_section_args(const AsmToken *toks, int start, int count,
             }
         }
         if (*bank == 0) *bank = 1; /* default ROMX bank 1 */
-        /* ROMX starts at cpu addr 0x4000 */
-        *org = 0x4000;
+        /* ROMX starts at cpu addr 0x4000 (unless an explicit [$addr] was given) */
+        if (!have_addr) *org = 0x4000;
     }
 
     return true;
@@ -1064,7 +1083,7 @@ AsmResult asm_assemble_mem(const char *src, const char *filename,
                 int    new_bank = 0;
                 uint16_t new_org = 0x0000;
                 parse_section_args(toks, s->dir.args_start, s->dir.args_count,
-                                   &new_bank, &new_org);
+                                   &new_bank, &new_org, NULL);
                 sec.bank     = new_bank;
                 sec.cur_addr = new_org;
                 sec.cur_off  = linear_off(new_bank, new_org);
@@ -1216,9 +1235,16 @@ AsmResult asm_assemble_mem(const char *src, const char *filename,
         for (int i = 0; i < nstmts; i++) {
             if (stmts[i].kind == ST_DIRECTIVE &&
                 stmts[i].dir.kind == DIR_SECTION) {
+                int tb = 0; uint16_t to = 0; bool sec_located = false;
                 parse_section_args(toks, stmts[i].dir.args_start,
                                    stmts[i].dir.args_count,
-                                   &layout_bank, &layout_base);
+                                   &tb, &to, &sec_located);
+                /* Fixed-address sections (interrupt vectors) hold no functions
+                 * and must not become the layout base — skip to the first
+                 * normal code section. */
+                if (sec_located) continue;
+                layout_bank = tb;
+                layout_base = to;
                 break;
             }
         }
@@ -1255,7 +1281,7 @@ AsmResult asm_assemble_mem(const char *src, const char *filename,
                     if (s->dir.kind == DIR_SECTION) {
                         int nb = 0; uint16_t no = 0;
                         parse_section_args(toks, s->dir.args_start,
-                                           s->dir.args_count, &nb, &no);
+                                           s->dir.args_count, &nb, &no, NULL);
                         sec.bank     = nb;
                         sec.cur_addr = no;
                         sec.cur_off  = linear_off(nb, no);
@@ -1562,7 +1588,7 @@ AsmResult asm_assemble_mem(const char *src, const char *filename,
             case DIR_SECTION: {
                 int new_bank = 0; uint16_t new_org = 0x0000;
                 parse_section_args(toks, s->dir.args_start, s->dir.args_count,
-                                   &new_bank, &new_org);
+                                   &new_bank, &new_org, NULL);
                 sec.bank     = new_bank;
                 sec.cur_addr = new_org;
                 sec.cur_off  = linear_off(new_bank, new_org);

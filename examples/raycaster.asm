@@ -120,7 +120,7 @@ Main:
     xor a
     ldh ($42), a             ; SCY = 0
 
-    ld a, 4
+    ld a, 3
     ld ($C0A0), a            ; px
     ld a, 6
     ld ($C0A1), a            ; py
@@ -655,12 +655,12 @@ CastColumns:
 ; (Edit this and the start cell at $C0A0/$C0A1, then F8 to rebuild the world.)
 Maze:
     db 1,1,1,1,1,1,1,1
-    db 1,1,1,1,0,1,1,1
-    db 1,1,1,1,0,1,1,1
-    db 1,1,1,1,0,1,1,1
-    db 1,1,1,1,0,1,1,1
-    db 1,1,1,1,0,1,1,1
-    db 1,1,1,1,0,1,1,1
+    db 1,0,0,0,0,0,0,1
+    db 1,0,0,1,0,0,0,1     ; an open 6x6 room with a few pillars so moving and
+    db 1,0,0,0,0,1,0,1     ; turning visibly change the view (walk around them)
+    db 1,0,1,0,0,0,0,1
+    db 1,0,0,0,1,0,0,1
+    db 1,0,0,0,0,0,0,1     ; player starts at (3,6) facing North
     db 1,1,1,1,1,1,1,1
 
 DirDX:

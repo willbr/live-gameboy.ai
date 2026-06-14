@@ -75,6 +75,19 @@ Main:
     dec b
     jr nz, .bord
 
+    ; --- "R" rendering-indicator sprite glyph -> tile 145 ($8910) ---
+    ld hl, RTile
+    ld de, $8910
+    ld bc, 16
+.rcopy:
+    ld a, (hl+)
+    ld (de), a
+    inc de
+    dec bc
+    ld a, b
+    or c
+    jr nz, .rcopy
+
     ; --- fill the whole tilemap with the border tile ---
     ld hl, $9800
     ld bc, $0400
@@ -117,10 +130,28 @@ Main:
     ; --- palette, scroll (SCX centres the 128-wide bitmap), player, APU ---
     ld a, $E4
     ldh ($47), a             ; BGP
+    ldh ($48), a             ; OBP0 (sprite palette, same ramp)
     ld a, 240
     ldh ($43), a             ; SCX = -16 -> bitmap (BG col 0..127) shows at x16..143
     xor a
     ldh ($42), a             ; SCY = 0
+
+    ; --- clear OAM, then set up the R sprite (OBJ 0); Y stays 0 = hidden ---
+    ld hl, $FE00
+    ld bc, $00A0
+.clroam:
+    xor a
+    ld (hl+), a
+    dec bc
+    ld a, b
+    or c
+    jr nz, .clroam
+    ld a, 84
+    ld ($FE01), a            ; X = 84  (screen x ~76, over the light ceiling)
+    ld a, 145
+    ld ($FE02), a            ; tile 145 = R glyph
+    xor a
+    ld ($FE03), a            ; attr = 0 (OBP0)
 
     ld a, 3
     ld ($C0A0), a            ; px
@@ -152,8 +183,8 @@ Main:
     xor a
     ldh ($0F), a             ; clear pending IF
 
-    ; --- LCD on: tiledata $8000, BG map $9800, BG on ---
-    ld a, $91
+    ; --- LCD on: tiledata $8000, BG map $9800, BG + OBJ on ---
+    ld a, $93
     ldh ($40), a
     ei                       ; the HBlank/VBlank ISRs now line-double every frame
 
@@ -171,16 +202,19 @@ Main:
     call ReadInput           ; turns / moves; A != 0 if the view must redraw
     or a
     jr z, .noRedraw
+    ld a, 32                 ; show the "R" sprite (we're in VBlank: OAM writable)
+    ld ($FE00), a            ; OBJ 0 Y = 32 -> on screen while we render
     call CastColumns         ; <-- F5 RENDERER -> shadow buffer (LCD stays on)
     di
     xor a
     ldh ($40), a             ; LCD off (only for the quick blit)
     call BlitShadow          ; shadow -> VRAM tile data
     xor a
+    ld ($FE00), a            ; hide the "R" (LCD off: OAM writable) -> ready
     ld (SCYACC), a           ; reset the line-double accumulator
     ldh ($42), a             ; SCY = 0 for line 0 of the resumed frame
-    ld a, $91
-    ldh ($40), a             ; LCD on
+    ld a, $93
+    ldh ($40), a             ; LCD on (BG + OBJ)
     ei
 .noRedraw:
     ; wait out the rest of VBlank so we handle input once per frame
@@ -809,6 +843,10 @@ DirDY:
 ; Linear camera plane: ~0 at centre, +/-32 at the edges. (Generated.)  ; TWEAK + F5
 PerpStep:
     incbin "examples/rc_perp.bin"
+
+; "R" rendering-indicator sprite glyph (8x8, colour 3 on transparent).
+RTile:
+    incbin "examples/rc_r.2bpp"
 
 ; WallHeights[dist 0..MAXSTEPS] -> wall height in PIXELS (dist in 1/2 cells,
 ; max 72 = bitmap height). Smooth perspective curve (~216/(dist+3)).  ; TWEAK + F5

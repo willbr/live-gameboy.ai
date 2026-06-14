@@ -105,11 +105,36 @@ static void test_raycaster_turn_sfx(void) {
     gb_free(gb); asm_free(&r);
 }
 
+/* The "R" rendering indicator (OBJ 0) is hidden when idle, shown (Y=32) while a
+ * move's redraw is in progress, and hidden again once it's ready. */
+static void test_raycaster_indicator(void) {
+    AsmResult r = ex_assemble("examples/raycaster.asm");
+    ASSERT_TRUE(r.ok);
+    GB *gb = gb_new();
+    gb_load_rom(gb, r.rom, r.rom_size);
+    gb_reset(gb);
+    ex_run(gb, 40, 16000000);
+    ASSERT_EQ(gb_read8(gb, 0xFE00), 0);          /* idle: R sprite hidden */
+
+    gb_set_buttons(gb, 0x40);                     /* Up -> redraw */
+    int shown = 0, hidden_again = 0;
+    for (int i = 0; i < 4000 && !hidden_again; i++) {
+        ex_run(gb, 1, 200000);
+        uint8_t y = gb_read8(gb, 0xFE00);
+        if (y == 32) shown = 1;
+        else if (shown && y == 0) hidden_again = 1;
+    }
+    ASSERT_TRUE(shown);                           /* shown while rendering */
+    ASSERT_TRUE(hidden_again);                    /* hidden once ready */
+    gb_free(gb); asm_free(&r);
+}
+
 int main(void) {
     test_raycaster_boots();
     test_raycaster_apu_on();
     test_raycaster_turns();
     test_raycaster_moves();
     test_raycaster_turn_sfx();
+    test_raycaster_indicator();
     TEST_MAIN_END();
 }

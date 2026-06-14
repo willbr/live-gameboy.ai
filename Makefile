@@ -106,14 +106,34 @@ snake-shot: live-gameboy-ide
 breakout-shot: live-gameboy-ide
 	./live-gameboy-ide --ide-shot examples/breakout.asm build/breakout.png 60
 
+asteroids-shot: live-gameboy-ide
+	./live-gameboy-ide --ide-shot examples/asteroids.asm build/asteroids.png 60
+
+platformer-shot: live-gameboy-ide
+	./live-gameboy-ide --ide-shot examples/platformer.asm build/platformer.png 60
+
+topdown-shot: live-gameboy-ide
+	./live-gameboy-ide --ide-shot examples/topdown.asm build/topdown.png 60
+
+raycaster-shot: live-gameboy-ide
+	./live-gameboy-ide --ide-shot examples/raycaster.asm build/raycaster.png 60
+
+driver-shot: live-gameboy-ide
+	./live-gameboy-ide --ide-shot examples/driver.asm build/driver.png 60
+
 # Build each example as a standalone .gb (relies on the entry-point patch)
 examples: gbasm
-	./gbasm examples/pong.asm     -o build/pong.gb
-	./gbasm examples/snake.asm    -o build/snake.gb
-	./gbasm examples/breakout.asm -o build/breakout.gb
-	@echo "examples: OK (build/{pong,snake,breakout}.gb)"
+	./gbasm examples/pong.asm      -o build/pong.gb
+	./gbasm examples/snake.asm     -o build/snake.gb
+	./gbasm examples/breakout.asm  -o build/breakout.gb
+	./gbasm examples/asteroids.asm -o build/asteroids.gb
+	./gbasm examples/platformer.asm -o build/platformer.gb
+	./gbasm examples/topdown.asm   -o build/topdown.gb
+	./gbasm examples/raycaster.asm -o build/raycaster.gb
+	./gbasm examples/driver.asm    -o build/driver.gb
+	@echo "examples: OK (build/{pong,snake,breakout,asteroids,platformer,topdown,raycaster,driver}.gb)"
 
 clean:
 	rm -rf $(BUILD) live-gameboy live-gameboy-ide gbasm
 
-.PHONY: all test blargg roms clean acid2 shell-shot sound gbasm asm-demo live-gameboy-ide ide-shot pong-shot snake-shot breakout-shot examples
+.PHONY: all test blargg roms clean acid2 shell-shot sound gbasm asm-demo live-gameboy-ide ide-shot pong-shot snake-shot breakout-shot asteroids-shot platformer-shot topdown-shot raycaster-shot driver-shot examples

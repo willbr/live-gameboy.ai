@@ -88,7 +88,7 @@ at startup — F5 keeps running state, so it won't re-run that code.
 
 ### Example games
 
-Three playable examples in `examples/`, each built to show off live-coding.
+Eight playable examples in `examples/`, each built to show off live-coding.
 Run any of them with the IDE (`./live-gameboy-ide examples/<game>.asm`) and look
 for the `TRY THIS LIVE` recipe at the top of each file.
 
@@ -97,9 +97,16 @@ for the `TRY THIS LIVE` recipe at the top of each file.
 | Pong | `examples/pong.asm` | F5 hot-reload `UpdateBall` physics mid-rally |
 | Snake | `examples/snake.asm` | F5 hot-reload `StepSnake` movement/speed rule |
 | Breakout | `examples/breakout.asm` | Edit the brick field live in the BG MAP / paint the brick tile |
+| Asteroids | `examples/asteroids.asm` | F5 hot-reload `UpdateShip` thrust/friction mid-flight |
+| Platformer | `examples/platformer.asm` | F5 hot-reload `UpdatePlayer` gravity/jump feel |
+| Top-down | `examples/topdown.asm` | F5 hot-reload `MoveHero` speed/collision; paint walls to reshape the room |
+| Raycaster | `examples/raycaster.asm` | F5 hot-reload `CastAndDraw` view params (FOV/depth/shading) |
+| Driver | `examples/driver.asm` | F5 hot-reload `Drive` scroll/steer/accel constants |
 
 Build them as standalone ROMs with `make examples`, or take headless
-screenshots with `make pong-shot` / `make snake-shot` / `make breakout-shot`.
+screenshots with `make pong-shot` / `make snake-shot` / `make breakout-shot` /
+`make asteroids-shot` / `make platformer-shot` / `make topdown-shot` /
+`make raycaster-shot` / `make driver-shot`.
 
 Each game also plays **sound effects** on key events (Pong: paddle/wall/score;
 Snake: eat-food/wall-wrap; Breakout: brick-break/paddle/wall). The effect

@@ -503,10 +503,13 @@ CastColumns:
     ; --- cast the 8 rays for this tile column ---
     xor a
     ld ($C0D1), a            ; j = 0
+    ld ($C0D9), a            ; maxEnd  = 0
+    ld ($C0DB), a            ; maxStart= 0
+    ld ($C0DE), a            ; maxColor= 0
     ld a, $FF
-    ld ($C0D8), a            ; minStart = 255
-    xor a
-    ld ($C0D9), a            ; maxEnd = 0
+    ld ($C0D8), a            ; minStart= 255
+    ld ($C0DC), a            ; minEnd  = 255
+    ld ($C0DD), a            ; minColor= 255
 .castJ:
     ld a, ($C0D0)            ; x = tx*8 + j
     add a, a
@@ -565,6 +568,18 @@ CastColumns:
     jr c, .noMax
     ld (hl), a
 .noMax:
+    ld a, d                  ; maxStart = max(start)
+    ld hl, $C0DB
+    cp (hl)
+    jr c, .noMaxS
+    ld (hl), a
+.noMaxS:
+    ld a, e                  ; minEnd = min(end)
+    ld hl, $C0DC
+    cp (hl)
+    jr nc, .noMinE
+    ld (hl), a
+.noMinE:
     ; colColor[j] = near/far by dist (B)
     ld a, b
     cp NEAR_CUT              ; ; TWEAK + F5 (near/far shading cutoff)
@@ -581,6 +596,18 @@ CastColumns:
     ld (hl), a               ; colColor[j]
     inc l
     ld (hl), a               ; colColor[j+1]
+    ld a, c                  ; minColor = min(color)
+    ld hl, $C0DD
+    cp (hl)
+    jr nc, .noMinC
+    ld (hl), a
+.noMinC:
+    ld a, c                  ; maxColor = max(color)
+    ld hl, $C0DE
+    cp (hl)
+    jr c, .noMaxC
+    ld (hl), a
+.noMaxC:
     ld a, ($C0D1)
     add a, 2                 ; cast every other column (0,2,4,6)
     ld ($C0D1), a
@@ -612,7 +639,7 @@ CastColumns:
     jr nc, .notCeil          ; tileBot >= minStart -> not all ceiling
     xor a                    ; ceiling color0 -> $00
     call .Fill16
-    jr .nextTy
+    jp .nextTy
 .notCeil:
     ld a, ($C0DA)            ; tileTop
     ld c, a
@@ -620,19 +647,38 @@ CastColumns:
     ld b, a
     ld a, c
     cp b
-    jr c, .perPixel          ; tileTop < maxEnd -> mixed
+    jr c, .notFloor          ; tileTop < maxEnd -> not all floor
     ld a, $FF                ; floor color3 -> $FF
     call .Fill16
-    jr .nextTy
+    jp .nextTy
+.notFloor:
+    ; all-wall fast fill? entirely in the wall band for every column, one colour:
+    ;   tileTop >= maxStart AND tileBot < minEnd AND minColor == maxColor
+    ld a, ($C0DD)            ; minColor
+    ld hl, $C0DE
+    cp (hl)
+    jr nz, .perPixel         ; near/far mixed across this tile -> per pixel
+    ld a, ($C0DA)            ; tileTop
+    ld hl, $C0DB
+    cp (hl)
+    jr c, .perPixel          ; tileTop < maxStart -> straddles the top edge
+    ld a, ($C0DA)
+    add a, 7                 ; tileBot
+    ld hl, $C0DC
+    cp (hl)
+    jr nc, .perPixel         ; tileBot >= minEnd -> straddles the bottom edge
+    ld a, ($C0DD)            ; uniform wall colour
+    call .FillWall
+    jp .nextTy
 .perPixel:
     xor a
     ld ($C0D3), a            ; prow = 0
 .prowLoop:
     ld a, ($C0DA)            ; y = tileTop + prow
-    ld c, a
+    ld l, a
     ld a, ($C0D3)
-    add a, c
-    ld ($C0D4), a            ; y
+    add a, l
+    ld c, a                  ; cache y in C (was a 16T memory read per compare)
     ld d, 0                  ; p0
     ld e, 0                  ; p1
     ld b, 0                  ; j
@@ -641,13 +687,13 @@ CastColumns:
     add a, $B0
     ld l, a
     ld h, $C0
-    ld a, ($C0D4)
+    ld a, c                  ; y
     cp (hl)
     jr c, .pcCeil            ; y < start -> ceiling (0)
     ld a, b                  ; end[j]
     add a, $B8
     ld l, a
-    ld a, ($C0D4)
+    ld a, c                  ; y
     cp (hl)
     jr nc, .pcFloor          ; y >= end -> floor (3)
     ld a, b                  ; wall color[j]
@@ -660,18 +706,11 @@ CastColumns:
     jr .pcHave
 .pcFloor:
     ld a, 3
-.pcHave:
-    ld c, a                  ; color
-    and 1
-    sla d
-    or d
-    ld d, a                  ; p0 = (p0<<1)|bit0
-    ld a, c
-    and 2
-    srl a
-    sla e
-    or e
-    ld e, a                  ; p1 = (p1<<1)|bit1
+.pcHave:                     ; a = colour (0..3); pack both planes via carry
+    srl a                    ; carry = bit0
+    rl d                     ; p0 = (p0<<1) | bit0
+    srl a                    ; carry = bit1
+    rl e                     ; p1 = (p1<<1) | bit1
     inc b
     ld a, b
     cp 8
@@ -719,6 +758,33 @@ CastColumns:
     ld (hl+), a
     dec b
     jr nz, .f16
+    ret
+
+; .FillWall — fill the tile at tileAddr ($C0D6/D7) with a solid wall colour.
+; In: A = colour (1 = near/light, 2 = far/dark). Clobbers A,B,D,E,H,L.
+.FillWall:
+    ld d, 0                  ; plane0
+    ld e, 0                  ; plane1
+    bit 0, a
+    jr z, .fwP1
+    ld d, $FF                ; colour bit0 -> plane0 all-ones
+.fwP1:
+    bit 1, a
+    jr z, .fwGo
+    ld e, $FF                ; colour bit1 -> plane1 all-ones
+.fwGo:
+    ld a, ($C0D6)
+    ld l, a
+    ld a, ($C0D7)
+    ld h, a
+    ld b, 8                  ; 8 rows of (plane0, plane1)
+.fwLoop:
+    ld a, d
+    ld (hl+), a
+    ld a, e
+    ld (hl+), a
+    dec b
+    jr nz, .fwLoop
     ret
 
 ; ====================== DATA TABLES ======================

@@ -24,3 +24,18 @@ games
 
 add game feel
 
+
+high level assembly language targeting gameboy and gameboy colour
+pico8 like standard library
+
+* static recompile to target:
+    * support dos
+    * window 3.11
+    * windows 11
+    * raspberry pi framebuffer
+
+use code from my claude gameboy emulator
+
+https://github.com/arcanite24/gb-recompiled
+https://github.com/N64Recomp/N64Recomp
+
